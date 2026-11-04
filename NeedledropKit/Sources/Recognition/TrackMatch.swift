@@ -8,6 +8,10 @@ public struct TrackMatch: Sendable, Equatable, Codable {
     public var isrc: String?
     public var shazamID: String?
     public var artworkURL: URL?
+    /// What the source said about the album and length (Apple Music, Spotify): hints for
+    /// finding the right version of the song in the catalogue.
+    public var albumHint: String?
+    public var durationHint: Double?
     /// Track position (seconds) at the audio time the match was reported.
     public var position: Double
     /// Shazam's frequency skew: how far the record's pitch is from the reference.

@@ -347,6 +347,9 @@ final class AppModel {
             metadata = info
             artwork = data.flatMap(NSImage.init(data:))
             artworkData = data
+            if info.collectionID == nil {
+                append("Couldn't find “\(info.title)” by \(info.artist) in the catalogue — no cover or album look")
+            }
             updateLook(for: info)
             requestScore()
         case .lyrics(let lyrics):
@@ -544,7 +547,8 @@ final class AppModel {
         }
         // Without a reported position, assume it started when the app announced it.
         let position = (pending.position ?? 0) + elapsed
-        if await engine.identify(title: pending.track.title, artist: pending.track.artist, position: position) {
+        if await engine.identify(title: pending.track.title, artist: pending.track.artist, album: pending.track.album,
+                                 duration: pending.track.duration, position: position) {
             pendingPlayerTrack = nil
             append("♫ from \(pending.track.source.rawValue): \(pending.track.artist) — \(pending.track.title)")
         }

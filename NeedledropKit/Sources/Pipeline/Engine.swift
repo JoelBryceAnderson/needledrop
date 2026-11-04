@@ -129,10 +129,13 @@ public actor Engine {
     /// it doesn't know). `position` nil assumes the song began when this stretch of music did.
     /// Returns false if no music is playing.
     @discardableResult
-    public func identify(title: String, artist: String, position: Double? = nil) -> Bool {
+    public func identify(title: String, artist: String, album: String? = nil, duration: Double? = nil,
+                         position: Double? = nil) -> Bool {
         guard machine.phase == .recognizing || machine.phase == .playing else { return false }
         let began = machine.clock?.trackStartTime ?? machine.searchingSince ?? machine.sideStart ?? lastTick
         var match = TrackMatch(title: title, artist: artist)
+        match.albumHint = album
+        match.durationHint = duration
         match.position = position ?? max(0, lastTick - began)
         apply(.match(match, at: lastTick))
         shared.withLock { $0.identifiedByHand = true }

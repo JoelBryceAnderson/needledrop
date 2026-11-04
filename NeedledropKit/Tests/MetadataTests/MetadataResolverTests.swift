@@ -1,5 +1,5 @@
 import Foundation
-import Metadata
+@testable import Metadata
 import Recognition
 import Synchronization
 import Testing
@@ -120,5 +120,33 @@ private let searchJSON = """
         // Still no match for someone else's song of the same name.
         #expect(MetadataResolver.artistMatch("Fleetwood Mac", "The Corrs") == 0)
         #expect(MetadataResolver.artistMatch("JAY-Z & Kanye West", "Otis Redding") == 0)
+    }
+}
+
+@Suite struct VersionMatchTests {
+    func song(_ title: String, artist: String = "Run The Jewels", album: String, ms: Int? = nil) -> ITunesResult {
+        ITunesResult(kind: "song", trackName: title, artistName: artist, collectionName: album, trackTimeMillis: ms)
+    }
+
+    @Test func theVersionPlayedBeatsInstrumentalsAndRemixes() {
+        let original = MetadataResolver.score(song("Early (feat. Boots)", album: "Run The Jewels 2"),
+                                              artist: "Run The Jewels", title: "Early (feat. Boots)", album: nil, duration: nil)
+        let instrumental = MetadataResolver.score(song("Early (Instrumental) [feat. Boots]", album: "Run The Jewels 2 (Instrumentals)"),
+                                                  artist: "Run The Jewels", title: "Early (feat. Boots)", album: nil, duration: nil)
+        #expect((original ?? .min) > (instrumental ?? .min))
+        // Whole words only: "Alive" isn't a live version.
+        let alive = MetadataResolver.score(song("Alive", artist: "Pearl Jam", album: "Ten"),
+                                           artist: "Pearl Jam", title: "Alive", album: nil, duration: nil)
+        let live = MetadataResolver.score(song("Alive (Live)", artist: "Pearl Jam", album: "Live on Two Legs"),
+                                          artist: "Pearl Jam", title: "Alive", album: nil, duration: nil)
+        #expect((alive ?? .min) > (live ?? .min))
+    }
+
+    @Test func theAlbumThePlayerNamedWins() {
+        let deluxe = MetadataResolver.score(song("King Kunta", artist: "Kendrick Lamar", album: "To Pimp a Butterfly"),
+                                            artist: "Kendrick Lamar", title: "King Kunta", album: "To Pimp a Butterfly", duration: nil)
+        let compilation = MetadataResolver.score(song("King Kunta", artist: "Kendrick Lamar", album: "Hits of 2015"),
+                                                 artist: "Kendrick Lamar", title: "King Kunta", album: "To Pimp a Butterfly", duration: nil)
+        #expect((deluxe ?? .min) > (compilation ?? .min))
     }
 }

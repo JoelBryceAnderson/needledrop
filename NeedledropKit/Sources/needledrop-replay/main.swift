@@ -9,6 +9,8 @@ import Metal
 import UniformTypeIdentifiers
 import Visuals
 import Lyrics
+import Metadata
+import Recognition
 import ArtDirector
 
 /// An .lrc file as lyrics and as the visuals' timeline (as the app builds it).
@@ -35,6 +37,7 @@ let usage = """
                                [--seconds S] [--size WxH] [--motion 0…1] [--at t1,t2,…]
                                (--lyric "a/b/c" cycles lines every 4 s; --at saves out-<t>.png at each time)
                                [--lrc song.lrc [--score score.json]]  (real lyric timing, and a track score)
+      needledrop-replay lookup <artist> <title> [--album A] [--duration S]   Find a track in the catalogue
       needledrop-replay score-check <song.lrc> <score.json>   Dry-run a track score against the lyrics
       needledrop-replay score-prompt <song.lrc> [--artist A] [--title T]   What Claude is sent to score it
                                                    Render visuals offscreen with synthetic music
@@ -354,6 +357,19 @@ case "still":
     CGImageDestinationAddImage(destination, context.makeImage()!, nil)
     guard CGImageDestinationFinalize(destination) else { fail("couldn't write \(path)") }
     print("wrote \(path)")
+
+case "lookup":
+    guard arguments.count >= 2 else { fail("lookup needs <artist> <title> [--album A] [--duration S]") }
+    let album = option("--album"), duration = option("--duration").flatMap(Double.init)
+    let (artist, title) = (arguments[0], arguments[1])
+    var match = TrackMatch(title: title, artist: artist)
+    match.albumHint = album
+    match.durationHint = duration
+    let cache = FileManager.default.temporaryDirectory.appendingPathComponent("needledrop-lookup-\(UUID())")
+    let m = await MetadataResolver(cacheDirectory: cache).resolve(match)
+    print("\(m.artist) — \(m.title)")
+    print("album: \(m.album ?? "NOT FOUND")\(m.collectionID.map { " (\($0))" } ?? "")")
+    print("cover: \(m.artworkURL?.absoluteString ?? "none")")
 
 case "score-check":
     guard arguments.count >= 2 else { fail("score-check needs <song.lrc> <score.json>") }
