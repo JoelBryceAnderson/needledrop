@@ -67,6 +67,21 @@ private let searchJSON = """
         #expect(m.appleMusicID == "3")
     }
 
+    @Test func searchRejectsTheSameTitleByAnotherArtist() async {
+        let http = FakeHTTP([("search?", """
+            {"resultCount":2,"results":[
+             {"kind":"song","trackId":1,"collectionId":10,"artistName":"Someone Else","collectionName":"Elsewhere",
+              "trackName":"Dreams","releaseDate":"1970-01-01T00:00:00Z"},
+             {"kind":"song","trackId":2,"collectionId":20,"artistName":"Cranberries","collectionName":"Everybody Else",
+              "trackName":"Dreams","releaseDate":"1993-03-01T00:00:00Z"}]}
+            """)])
+        let resolver = MetadataResolver(cacheDirectory: tempDir(), http: http)
+        let hit = await resolver.resolve(TrackMatch(title: "Dreams", artist: "The Cranberries"))
+        #expect(hit.album == "Everybody Else")  // "The" ignored; "Someone Else" never considered
+        let miss = await resolver.resolve(TrackMatch(title: "Dreams", artist: "Fleetwood Mac"))
+        #expect(miss.album == nil && miss.artist == "Fleetwood Mac")  // no wrong record
+    }
+
     @Test func cachesOnDiskAcrossInstances() async {
         let dir = tempDir()
         let match = TrackMatch(title: "Dreams", artist: "Fleetwood Mac", appleMusicID: "1440833098")
