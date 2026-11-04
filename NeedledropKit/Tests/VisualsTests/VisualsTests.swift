@@ -162,9 +162,21 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
     }
 
     private func stats(_ pixels: [UInt8]) -> (mean: Double, spread: Double) {
-        let lum = stride(from: 0, to: pixels.count, by: 4).map { Double(pixels[$0]) + Double(pixels[$0 + 1]) + Double(pixels[$0 + 2]) }
-        let mean = lum.reduce(0, +) / Double(lum.count)
-        let spread = (lum.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(lum.count)).squareRoot()
+        // Spelled out step by step: Swift 6.3 times out type-checking the one-liners.
+        var lum: [Double] = []
+        lum.reserveCapacity(pixels.count / 4)
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let r = Double(pixels[i]), g = Double(pixels[i + 1]), b = Double(pixels[i + 2])
+            lum.append(r + g + b)
+        }
+        let count = Double(lum.count)
+        let mean: Double = lum.reduce(0, +) / count
+        var variance = 0.0
+        for v in lum {
+            let d: Double = v - mean
+            variance += d * d
+        }
+        let spread: Double = (variance / count).squareRoot()
         return (mean / 765, spread / 765)
     }
 
