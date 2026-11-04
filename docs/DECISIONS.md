@@ -191,6 +191,38 @@ arrives.
 eight-point starbursts and an atom motif in flat palette colour, with geometric uppercase
 type. The Theme setting (Auto / Paper / Googie / Smoke) forces a look or lets Claude choose.
 
+## Made in Milestone 7
+
+**Word-level lyrics without a glyph atlas.** Each line is still one texture, but word *i*
+is drawn with red = (i + ½)/n. The shader prints only the first *k* words, with a
+fractional *k* fading the current word in. `WordTiming` shares a line's time out by
+syllable count, then snaps word starts within 120 ms onto the beat grid. The grid is
+projected from the tracked tempo and the last beat, into track time via the playback clock.
+
+**Dissolve:** the cover is a 7×7 grid of triangular shards. An onset scatters them by
+half the music's level (at most 0.6); they settle with a 0.35 s decay, and a beat pulls
+them home. The shader finds each pixel's shard by undoing nearby shards' offsets.
+Deliberately restrained: it was frantic at full strength.
+
+**Virtual record** is drawn in flat vector style:
+- wide groove bands, since fine grooves vanish at 480i;
+- a fixed sheen while the disc turns, which is what reads as spinning;
+- the art as the centre label;
+- a tonearm whose stylus moves from the outer edge inward over a typical 22-minute side.
+
+RPM is a setting. "Auto" means 45 for singles and EPs (four tracks or fewer, or the album
+name says so) and 33⅓ otherwise. Speed can't be inferred from Shazam, which matches the
+music at either speed.
+
+**Side end:** motion and spin ease to a stop over 3 s and the colour drains, then
+"Side X complete / Flip for side Y" is printed like the caption. Sides count A, B, C…
+within a sitting; a gap of more than 15 minutes starts again at A.
+
+**Library wall:** a SwiftUI view, rebuilt each time it appears so it reflects the latest
+plays. Big tiles in three rows drift slowly sideways, with play counts, "most spun this
+month" and "on this day". It fades in 25 s into idle, after the scene has faded. The
+"When idle" setting can choose plain black instead.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

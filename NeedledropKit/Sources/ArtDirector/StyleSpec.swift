@@ -98,6 +98,11 @@ public struct StyleSpec: Codable, Sendable, Equatable {
     public func lookStyle(shaderValid: Bool) -> LookStyle {
         var s = LookStyle()
         s.background = LookStyle.Background(rawValue: background) ?? .paper
+        // The cover takes the strongest of the three cover modes.
+        let covers: [(LookStyle.CoverMode, Double)] = [
+            (.living, modeWeights.livingCover), (.dissolve, modeWeights.dissolve), (.record, modeWeights.virtualRecord),
+        ]
+        s.coverMode = covers.max { $0.1 < $1.1 }?.0 ?? .living
         if s.background == .custom, !shaderValid { s.background = .paper }
         s.customShaderBody = s.background == .custom ? shader.mslBody : nil
         s.foldAngle = folds.angleDegrees

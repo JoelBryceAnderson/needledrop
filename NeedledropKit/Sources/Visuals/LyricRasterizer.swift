@@ -67,12 +67,26 @@ enum LyricRasterizer {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineHeightMultiple = 0.92
-        let attributed = NSAttributedString(string: text, attributes: [
+        let attributed = NSMutableAttributedString(string: text, attributes: [
             .font: typeface(font, weight, fontSize),
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
         ])
+        // Word i is drawn with red = (i + 0.5) / n, so the shader can print words one at a
+        // time (typewriter). Only alpha is used for the ink itself.
+        let ranges = wordRanges(text)
+        for (i, range) in ranges.enumerated() {
+            let value = (CGFloat(i) + 0.5) / CGFloat(ranges.count)
+            attributed.addAttribute(.foregroundColor, value: NSColor(srgbRed: value, green: 1, blue: 1, alpha: 1), range: range)
+        }
         return draw(attributed, fontSize: fontSize, maxWidth: maxWidth, maxLines: maxLines)
+    }
+
+    /// Whitespace-separated words, matching `WordTiming.words`.
+    static func wordRanges(_ text: String) -> [NSRange] {
+        let ns = text as NSString
+        let regex = try! NSRegularExpression(pattern: "\\S+")
+        return regex.matches(in: text, range: NSRange(location: 0, length: ns.length)).map(\.range)
     }
 
     private static func draw(_ attributed: NSAttributedString, fontSize: CGFloat, maxWidth: CGFloat, maxLines: Int) -> CGImage? {

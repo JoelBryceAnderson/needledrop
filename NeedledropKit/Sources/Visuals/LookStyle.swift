@@ -35,7 +35,17 @@ public struct LookStyle: Sendable, Equatable, Codable {
         case typewriter
     }
 
+    public enum CoverMode: String, Sendable, Codable, CaseIterable {
+        /// The artwork with its subject lifted off the background.
+        case living
+        /// The artwork in paper shards that fly out on transients.
+        case dissolve
+        /// A record spinning, the artwork as its label.
+        case record
+    }
+
     public var background: Background = .paper
+    public var coverMode: CoverMode = .living
     /// Overrides for the fold composition (degrees from horizontal; 2…4 creases).
     public var foldAngle: Double?
     public var foldCount: Int?

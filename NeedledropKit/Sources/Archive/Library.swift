@@ -285,6 +285,35 @@ public final class Library: Sendable {
         }
     }
 
+    /// The album with the most plays since `date` ("most spun this month").
+    public func mostPlayedAlbum(since date: Date) throws -> AlbumSummary? {
+        try db.read { db in
+            try AlbumSummary.fetchOne(db, sql: """
+                SELECT album.id AS albumID, album.title, album.artist, album.artworkPath,
+                       COUNT(play.id) AS plays, MAX(play.playedAt) AS lastPlayed
+                FROM album JOIN track ON track.albumID = album.id JOIN play ON play.trackID = track.id
+                WHERE play.playedAt >= ?
+                GROUP BY album.id ORDER BY plays DESC, lastPlayed DESC LIMIT 1
+                """, arguments: [date])
+        }
+    }
+
+    /// Albums played on this calendar day in earlier years ("on this day").
+    public func albumsPlayedOnThisDay(_ date: Date = Date()) throws -> [AlbumSummary] {
+        let parts = Calendar(identifier: .gregorian).dateComponents(in: .current, from: date)
+        let monthDay = String(format: "%02d-%02d", parts.month ?? 1, parts.day ?? 1)
+        let year = String(parts.year ?? 2000)
+        return try db.read { db in
+            try AlbumSummary.fetchAll(db, sql: """
+                SELECT album.id AS albumID, album.title, album.artist, album.artworkPath,
+                       COUNT(play.id) AS plays, MAX(play.playedAt) AS lastPlayed
+                FROM album JOIN track ON track.albumID = album.id JOIN play ON play.trackID = track.id
+                WHERE strftime('%m-%d', play.playedAt, 'localtime') = ? AND strftime('%Y', play.playedAt, 'localtime') < ?
+                GROUP BY album.id ORDER BY lastPlayed DESC
+                """, arguments: [monthDay, year])
+        }
+    }
+
     /// Albums by most recent play, with play counts (for the library wall).
     public func albumsByRecentPlay(limit: Int = 200) throws -> [AlbumSummary] {
         try db.read { db in

@@ -59,6 +59,19 @@ import Testing
         #expect(try library.addRecording(recording(nil, side: s, path: "/u.m4a"), policy: .keepBest) == .keep(replacing: []))
     }
 
+    @Test func wallMomentsMostSpunAndOnThisDay() throws {
+        let library = try Library()
+        let rumours = try library.upsertTrack(identity: "a", metadata: metadata("Dreams"))
+        let other = try library.upsertTrack(identity: "b", metadata: metadata("Night", album: "Other", collection: "2"))
+        let now = Date()
+        let lastYear = Calendar(identifier: .gregorian).date(byAdding: .year, value: -1, to: now)!
+        for _ in 0..<3 { try library.recordPlay(trackID: other, at: now) }
+        try library.recordPlay(trackID: rumours, at: now)
+        try library.recordPlay(trackID: rumours, at: lastYear)
+        #expect(try library.mostPlayedAlbum(since: now.addingTimeInterval(-3600))?.title == "Other")
+        #expect(try library.albumsPlayedOnThisDay(now).map(\.title) == ["Rumours"])
+    }
+
     @Test func persistsOnDisk() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("needledrop-lib-\(UUID())/library.sqlite").path
         let id = try Library(path: path).upsertTrack(identity: "isrc:A", metadata: metadata("Dreams"))

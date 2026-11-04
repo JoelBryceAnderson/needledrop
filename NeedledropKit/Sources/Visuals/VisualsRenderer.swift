@@ -11,11 +11,15 @@ public struct LyricFrame: Sendable, Equatable {
     public var text: String
     /// The following line, rendered ahead of time.
     public var next: String?
+    /// Typewriter style: how many words are sung so far (fractional = the current word
+    /// fading in). Nil prints the whole line.
+    public var revealedWords: Double?
 
-    public init(id: Int, text: String, next: String? = nil) {
+    public init(id: Int, text: String, next: String? = nil, revealedWords: Double? = nil) {
         self.id = id
         self.text = text
         self.next = next
+        self.revealedWords = revealedWords
     }
 }
 
@@ -44,6 +48,14 @@ public struct VisualInput: Sendable {
     public var lyricsAvailable: Bool
     public var lyric: LyricFrame?
     public var caption: CaptionFrame?
+    /// Seconds since the last onset (drives the cover dissolve).
+    public var onsetAge: Double?
+    /// The side just finished: wind the picture down.
+    public var sideEnded = false
+    /// 0…1 through the side (the virtual record's tonearm).
+    public var sideProgress = 0.0
+    /// The virtual record's speed.
+    public var rpm = 100.0 / 3
 
     public init(features: AudioFeatures = AudioFeatures(), beatAge: Double? = nil, active: Bool = false,
                 lyricsAvailable: Bool = false, lyric: LyricFrame? = nil, caption: CaptionFrame? = nil) {
@@ -78,8 +90,15 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// Forces a background for every album (the Theme setting); nil follows each album's
     /// art direction.
     public var themeOverride: LookStyle.Background?
-    /// Show the album cover (living cover) over the background.
+    /// Show the album cover over the background.
     public var showCover = true
+    /// Forces how the cover is shown (the Cover setting); nil follows the art direction.
+    public var coverModeOverride: LookStyle.CoverMode?
+
+    private var dissolve = 0.0
+    private var lastKick = -Double.infinity
+    private var recordAngle = 0.0
+    private var windDown = 0.0
     /// Called once per frame for audio and session state.
     public var inputProvider: (() -> VisualInput)?
 
@@ -118,6 +137,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         var spot: FoldLayout.TextSpot?
         var enteredAt: Double
         var exitedAt: Double?
+        var words = 0
+        var revealedWords: Double?
     }
 
     /// Cover placement, eased: centre x as a fraction of width, size in frame heights.
@@ -234,7 +255,19 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         var audio = drive.update(features: input.features, beatAge: input.beatAge, dt: dt)
         audio.bass = min(1, audio.bass * Float(style.bassResponse))
         audio.beat = min(1, audio.beat * Float(style.beatResponse))
-        flow += dt * (0.04 + 0.10 * Double(audio.level)) * style.speed
+        // Side over: everything slows to a stop over ~3 s, like a record spinning down.
+        windDown = input.sideEnded ? min(1, windDown + dt / 3) : max(0, windDown - dt / 0.8)
+        let running = 1 - windDown * windDown * (3 - 2 * windDown)
+        flow += dt * (0.04 + 0.10 * Double(audio.level)) * style.speed * running
+        recordAngle = (recordAngle + dt * input.rpm / 60 * 2 * .pi * running).truncatingRemainder(dividingBy: 2 * .pi)
+        // Dissolve: a transient scatters the shards in proportion to how loud it is; they
+        // drift home, faster on the beat.
+        if let age = input.onsetAge, age < 0.06, time - lastKick > 0.15 {
+            dissolve = max(dissolve, min(0.6, Double(audio.level) * 0.5))
+            lastKick = time
+        }
+        if audio.beat > 0.9 { dissolve *= 0.9 }
+        dissolve *= exp(-dt / 0.35)
         let frame = director.update(at: time, active: input.active)
         if frame.previousReleased, slots.count > 1 { slots.removeLast() }
 
@@ -263,6 +296,13 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         case .custom: 3
         }
         uniforms.style = SIMD4(backgroundIndex, Float(coverX), Float(coverSize), 0)
+        let coverIndex: Float = switch coverModeOverride ?? style.coverMode {
+        case .living: 0
+        case .dissolve: 1
+        case .record: 2
+        }
+        uniforms.cover = SIMD4(coverIndex, Float(dissolve), Float(recordAngle), Float(input.sideProgress))
+        uniforms.scene = SIMD4(Float(windDown), 0, 0, 0)
         setInk(&uniforms, time: time, layout: layout)
         let previous = slots.count > 1 ? slots[1] : nil
         uniforms.slots = SIMD4(current?.art == nil ? 0 : 1, previous?.art == nil ? 0 : 1,
@@ -371,10 +411,15 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                     guard let text = lyricTexture(lyric.text, size: size, sceneHeight: sceneHeight),
                           let spot = layout.spot(forLine: lyric.id, size: text.size, obstacles: blocked) else { continue }
                     lyricSlots.append(PrintedSlot(id: lyric.id, captionID: nil, texture: text.texture, size: text.size,
-                                                  spot: spot, enteredAt: time))
+                                                  spot: spot, enteredAt: time,
+                                                  words: LyricRasterizer.wordRanges(lyric.text).count))
                     break
                 }
             }
+        }
+        // The sung line's word count moves on every frame (typewriter); older lines are whole.
+        if let lyric = input.lyric, let i = lyricSlots.lastIndex(where: { $0.id == lyric.id && $0.exitedAt == nil }) {
+            lyricSlots[i].revealedWords = lyric.revealedWords
         }
         lyricSlots.removeAll { slot in slot.exitedAt.map { time - $0 > Self.inkOut } ?? false }
         if lyricSlots.count > 2 { lyricSlots.removeFirst(lyricSlots.count - 2) }
@@ -411,8 +456,16 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             return (SIMD4(Float(f.centre.x), Float(f.centre.y), Float(slot.size.x / 2), Float(slot.size.y / 2)),
                     SIMD4(Float(f.angle), Float(o), blur(o, exiting: slot.exitedAt != nil), 0))
         }
-        (uniforms.ink0a, uniforms.ink0b) = lyric(lyricSlots.last)
-        (uniforms.ink1a, uniforms.ink1b) = lyric(lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2] : nil)
+        let newest = lyricSlots.last
+        let older = lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2] : nil
+        (uniforms.ink0a, uniforms.ink0b) = lyric(newest)
+        (uniforms.ink1a, uniforms.ink1b) = lyric(older)
+        func words(_ slot: PrintedSlot?) -> (Float, Float) {
+            guard let slot, let shown = slot.revealedWords, slot.exitedAt == nil else { return (0, 0) }
+            return (Float(slot.words), Float(shown))
+        }
+        let (n0, r0) = words(newest), (n1, r1) = words(older)
+        uniforms.inkWords = SIMD4(n0, r0, n1, r1)
         if let caption = captionSlot {
             let f = captionFrame(caption)
             let o = captionOpacity(caption, time: time)
@@ -483,8 +536,11 @@ struct SceneUniforms {
     var ink1b = SIMD4<Float>()
     var ink2a = SIMD4<Float>()
     var ink2b = SIMD4<Float>()
+    var inkWords = SIMD4<Float>()
     var crease: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
     var fold = SIMD4<Float>()
+    var cover = SIMD4<Float>()
+    var scene = SIMD4<Float>()
     var light = SIMD4<Float>(0, 0, 1, 0)
     var palette0 = SceneUniforms.emptyPalette
     var palette1 = SceneUniforms.emptyPalette

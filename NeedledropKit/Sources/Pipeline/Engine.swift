@@ -10,6 +10,8 @@ import Synchronization
 /// What the UI shows about the session. Pulled per frame like `PipelineSnapshot`.
 public struct SessionSnapshot: Sendable {
     public var phase: SessionPhase = .idle
+    /// Audio time the current side started (nil between sides).
+    public var sideStart: Double?
     public var track: TrackMatch?
     public var metadata: TrackMetadata?
     /// Lyrics for the current track, once fetched (nil while loading or if there are none).
@@ -190,6 +192,7 @@ public actor Engine {
         let machine = self.machine
         shared.withLock {
             $0.phase = machine.phase
+            $0.sideStart = machine.sideStart
             $0.track = machine.track
             $0.clock = machine.clock
             $0.unidentified = machine.unidentified
