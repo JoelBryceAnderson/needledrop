@@ -45,6 +45,7 @@ struct AppSettings: Codable, Equatable {
     var replayAudible = true
     /// Take what's playing from Apple Music / Spotify when they're the source.
     var followMusicApps = true
+    var setupCompleted = false
     var artDirector = ArtDirectorSettings()
     var showCover = true
     var showNowPlaying = true
@@ -74,6 +75,7 @@ struct AppSettings: Codable, Equatable {
         idleScreen = (try? c.decodeIfPresent(IdleScreen.self, forKey: .idleScreen)) ?? d.idleScreen
         replayAudible = try c.decodeIfPresent(Bool.self, forKey: .replayAudible) ?? d.replayAudible
         followMusicApps = try c.decodeIfPresent(Bool.self, forKey: .followMusicApps) ?? d.followMusicApps
+        setupCompleted = try c.decodeIfPresent(Bool.self, forKey: .setupCompleted) ?? d.setupCompleted
         artDirector = (try? c.decodeIfPresent(ArtDirectorSettings.self, forKey: .artDirector)) ?? d.artDirector
         showCover = try c.decodeIfPresent(Bool.self, forKey: .showCover) ?? d.showCover
         showNowPlaying = try c.decodeIfPresent(Bool.self, forKey: .showNowPlaying) ?? d.showNowPlaying

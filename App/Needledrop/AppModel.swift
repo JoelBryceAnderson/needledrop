@@ -51,6 +51,7 @@ final class AppModel {
     /// When the turntable went quiet (for the library wall).
     private(set) var idleSince: Date?
     private let playerWatcher = PlayerWatcher()
+    private let setup = SetupPresenter()
     /// A track a music app announced, waiting for Needledrop to hear it start.
     private var pendingPlayerTrack: (track: PlayerTrack, position: Double?, received: Date)?
     private var applyingPlayerTrack = false
@@ -131,6 +132,10 @@ final class AppModel {
         refreshDevices()
         await restartInput()
         if settings.followMusicApps { playerWatcher.checkNow() }
+        // First run with a live input: walk through levels and latency.
+        if !settings.setupCompleted, settings.input == .systemDefault || { if case .device = settings.input { true } else { false } }() {
+            showSetup()
+        }
         presentVisuals()
         presentation.onDisplaysChanged = { [weak self] in self?.presentVisuals() }
     }
@@ -487,6 +492,10 @@ final class AppModel {
         case .dissolve: .dissolve
         case .record: .record
         }
+    }
+
+    func showSetup() {
+        setup.show(model: self)
     }
 
     func toggleDebugOverlay() {

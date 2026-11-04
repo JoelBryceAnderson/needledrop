@@ -16,6 +16,7 @@ struct NeedledropApp: App {
             CommandMenu("Controls") {
                 WhatsPlayingButton()
                     .keyboardShortcut("k", modifiers: .command)
+                Button("Set Up Turntable…") { delegate.model.showSetup() }
             }
         }
         MenuBarExtra {
