@@ -130,6 +130,7 @@ final class AppModel {
     func launch() async {
         refreshDevices()
         await restartInput()
+        if settings.followMusicApps { playerWatcher.checkNow() }
         presentVisuals()
         presentation.onDisplaysChanged = { [weak self] in self?.presentVisuals() }
     }
@@ -267,6 +268,8 @@ final class AppModel {
             if let text = Self.describe(side) { append(text) }
             switch side {
             case .sideStarted:
+                // Music just started: if a player app is the source, ask it what's on.
+                if settings.followMusicApps { playerWatcher.checkNow() }
                 // A new sitting after a long break starts again at side A.
                 if let ended = lastSideEnded, Date().timeIntervalSince(ended) < 15 * 60 { sideIndex += 1 } else { sideIndex = 0 }
             case .sideEnded:

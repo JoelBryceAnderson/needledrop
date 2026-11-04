@@ -29,6 +29,40 @@ final class PlayerWatcher {
         onTrack?(track, position)
     }
 
+    /// Asks Music and Spotify directly (they only announce *changes*, so a song already
+    /// playing when Needledrop starts would otherwise go unnoticed). Only apps that are
+    /// running are asked — never launched. Reports through `onTrack`.
+    func checkNow() {
+        let players: [(String, PlayerTrack.Source, String)] = [
+            ("com.apple.Music", .appleMusic, "Music"),
+            ("com.spotify.client", .spotify, "Spotify"),
+        ]
+        for (bundle, source, name) in players where !NSRunningApplication.runningApplications(withBundleIdentifier: bundle).isEmpty {
+            // Music gives duration in seconds; Spotify in milliseconds.
+            let duration = source == .spotify ? "(duration of t) / 1000" : "duration of t"
+            let script = """
+                tell application "\(name)"
+                    if player state is playing then
+                        set t to current track
+                        return {name of t, artist of t, album of t, \(duration), player position}
+                    end if
+                end tell
+                """
+            var error: NSDictionary?
+            guard let result = NSAppleScript(source: script)?.executeAndReturnError(&error), error == nil,
+                  result.numberOfItems == 5,
+                  let title = result.atIndex(1)?.stringValue, let artist = result.atIndex(2)?.stringValue,
+                  !title.isEmpty, !artist.isEmpty else { continue }
+            var info: [AnyHashable: Any] = ["Name": title, "Artist": artist, "Player State": "Playing"]
+            info["Album"] = result.atIndex(3)?.stringValue
+            guard let track = PlayerTrack(source: source, userInfo: info) else { continue }
+            var reported = track
+            reported.duration = result.atIndex(4)?.doubleValue
+            onTrack?(reported, result.atIndex(5)?.doubleValue)
+            return
+        }
+    }
+
     /// Needs the one-time "Needledrop wants to control Music" permission; nil without it.
     private static func musicPosition() -> Double? {
         // Never launch Music just to ask.
