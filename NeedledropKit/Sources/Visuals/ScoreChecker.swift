@@ -8,7 +8,7 @@ import Foundation
 /// (the choreographer would hold or skip it anyway).
 public enum ScoreChecker {
     public struct Issue: Sendable, Equatable, CustomStringConvertible {
-        public enum Kind: Sendable, Equatable { case keyframe(Int), line(Int), section(Int) }
+        public enum Kind: Sendable, Equatable { case keyframe(Int), line(Int), section(Int), effect(Int) }
         public var kind: Kind
         public var message: String
         public var description: String { message }
@@ -17,9 +17,13 @@ public enum ScoreChecker {
     /// How long before the next line a move must have settled (matches the choreographer).
     static let settle = 0.3
 
+    /// Effects running at once: at most this many, and this much GPU time between them.
+    public static let maximumConcurrentEffects = 3
+    public static let effectBudget = 2.0
+
     public static func check(_ score: TrackScore, timeline: LyricTimeline, style: LookStyle = LookStyle(),
-                             aspect: Double = 16.0 / 9) -> [Issue] {
-        var issues: [Issue] = []
+                             aspect: Double = 16.0 / 9, tempo: Double? = nil) -> [Issue] {
+        var issues: [Issue] = checkEffects(score, timeline: timeline, tempo: tempo)
         let indices = Set(timeline.lines.map(\.index))
 
         for section in score.sections where !indices.contains(section.startLine) {
@@ -67,6 +71,55 @@ public enum ScoreChecker {
             if !fits(line.text, treatment: t, composition: composition, style: style, aspect: aspect) {
                 let folds = composition?.creases.map { "\($0) creases" } ?? "this composition"
                 issues.append(Issue(kind: .line(t.line), message: "Line \(t.line) doesn't fit as \(t.emphasis.rawValue)\(t.placement == .any ? "" : " in the \(t.placement.rawValue) part of the screen") with \(folds); try normal emphasis, another placement, or fewer creases there."))
+            }
+        }
+        return issues
+    }
+
+    /// Effects: not too many at once, gentle enough over a line to keep it readable, and no
+    /// line asked to sit where a letterbox's bars will be.
+    static func checkEffects(_ score: TrackScore, timeline: LyricTimeline, tempo: Double?) -> [Issue] {
+        var issues: [Issue] = []
+        let beat = 60 / min(200, max(60, tempo ?? 120))
+        let spans = score.effects.map { e -> (start: Double, end: Double)? in
+            guard let line = timeline.line(e.atLine) else { return nil }
+            let start = line.start + e.offsetBeats * beat
+            return (start, start + e.durationBeats * beat)
+        }
+        func overlaps(_ a: (start: Double, end: Double), _ b: (start: Double, end: Double)) -> Bool {
+            a.start < b.end && b.start < a.end
+        }
+        for (i, e) in score.effects.enumerated() {
+            guard let span = spans[i] else {
+                issues.append(Issue(kind: .effect(i), message: "Effect \(e.kind.rawValue) at line \(e.atLine): there's no such line."))
+                continue
+            }
+            // What's running when this one starts.
+            let running = score.effects.indices.filter { j in
+                guard let other = spans[j], j != i else { return false }
+                // Earlier ones (ties go to the one listed first), still running.
+                return (other.start < span.start || (other.start == span.start && j < i)) && other.end > span.start
+            }
+            let cost = running.reduce(e.kind.info.cost * e.intensity) { $0 + score.effects[$1].kind.info.cost * score.effects[$1].intensity }
+            if running.count + 1 > maximumConcurrentEffects || cost > effectBudget {
+                issues.append(Issue(kind: .effect(i), message: "Effect \(e.kind.rawValue) at line \(e.atLine) starts while \(running.count) others are running; keep it to \(maximumConcurrentEffects) at once."))
+                continue
+            }
+            // Over a line, effects that blur or wash the words out are kept gentle.
+            let cap = e.kind.info.maxOverLine
+            if e.intensity > cap + 1e-9,
+               let line = timeline.lines.first(where: { overlaps(span, ($0.start, $0.shownUntil)) }) {
+                issues.append(Issue(kind: .effect(i), message: "Effect \(e.kind.rawValue) at intensity \(String(format: "%.2f", e.intensity)) lands while line \(line.index) is up; keep it at \(String(format: "%.1f", cap)) or less there, or move it into the gap before the line (negative offset_beats)."))
+                continue
+            }
+            if e.kind == .letterbox {
+                let squeezed = score.lines.filter { t in
+                    guard t.placement == .upper || t.placement == .lower, let line = timeline.line(t.line) else { return false }
+                    return overlaps(span, (line.start, line.shownUntil))
+                }
+                if let first = squeezed.first {
+                    issues.append(Issue(kind: .line(first.line), message: "Line \(first.line) is placed \(first.placement.rawValue) during the letterbox at line \(e.atLine), where the bars are; use middle or any."))
+                }
             }
         }
         return issues

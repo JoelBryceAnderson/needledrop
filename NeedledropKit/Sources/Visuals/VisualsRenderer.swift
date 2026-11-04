@@ -58,6 +58,8 @@ public struct VisualInput: Sendable {
     public var rpm = 100.0 / 3
     /// Changes when the track changes (the choreographer opens a new scene). Nil: the album.
     public var trackID: String?
+    /// Where the track is (seconds, on the song's clock): timed effects are placed on it.
+    public var trackPosition: Double?
     /// Seconds until the next lyric line starts (nil: none coming). The picture moves in the
     /// gaps between lines and settles before the next one.
     public var nextLyricIn: Double?
@@ -129,8 +131,29 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// The plan for the track playing (see `TrackScore`); nil: the built-in rules decide.
     public var score: TrackScore? {
         get { choreographer.score }
-        set { choreographer.score = newValue }
+        set {
+            choreographer.score = newValue
+            effectCache = nil
+        }
     }
+    /// The track's lyric timing, which places the score's effects.
+    public var scoreTimeline: LyricTimeline? {
+        didSet { effectCache = nil }
+    }
+    private var effectCache: (tempo: Int, timeline: EffectTimeline)?
+    /// This frame's effect levels.
+    private var effects: [Effect.Kind: (amount: Double, progress: Double)] = [:]
+
+    private func effectTimeline(tempo: Double?) -> EffectTimeline? {
+        guard let score, !score.effects.isEmpty, let scoreTimeline else { return nil }
+        let bpm = Int((tempo ?? 120).rounded())
+        if let cached = effectCache, abs(cached.tempo - bpm) <= 2 { return cached.timeline }
+        let built = EffectTimeline(score: score, timeline: scoreTimeline, tempo: Double(bpm))
+        effectCache = (bpm, built)
+        return built
+    }
+
+    private func effect(_ kind: Effect.Kind) -> Double { motion > 0 ? effects[kind]?.amount ?? 0 : 0 }
     private var shot = Choreographer.Frame(cover: .hero, camera: .identity, targetCover: .hero,
                                            targetCamera: .identity, shot: "hero", cuts: 0,
                                            moving: false, progress: 1, composition: 0)
@@ -343,6 +366,14 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         shotInput.nextLineIn = input.lyricsAvailable ? input.nextLyricIn : nil
         shotInput.nextLineIndex = input.nextLyricIndex
         shot = choreographer.update(shotInput)
+        // The score's timed effects, on the song's clock.
+        let effectTimes = effectTimeline(tempo: input.features.tempo)
+        effects = input.trackPosition.flatMap { position in effectTimes?.levels(at: position) } ?? [:]
+        let shake = effect(.shake)
+        if shake > 0 {
+            shot.camera.pan += SIMD2(sin(time * 31), cos(time * 27)) * 0.012 * shake
+            shot.camera.roll += sin(time * 23) * 0.012 * shake
+        }
         // The cover lives in the now-playing strip, small and always there; the choreography
         // moves the camera and the folds around it.
         if coverInStrip {
@@ -364,6 +395,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         case .smoke: 1
         case .googie: 2
         case .custom: 3
+        case .collage: 4
+        case .risograph: 5
         }
         uniforms.style = SIMD4(backgroundIndex, Float(shot.cover.x), Float(shot.cover.size), flatTone)
         let coverIndex: Float = switch coverModeOverride ?? style.coverMode {
@@ -376,6 +409,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                                Float(shot.cover.visibility))
         uniforms.setCamera(shot.camera.worldFromScreen(aspect: aspect))
         uniforms.strip = stripBacking(aspect: aspect, hasArt: current?.art != nil && showCover, time: time)
+        uniforms.effects0 = SIMD4(Float(effect(.creaseSnap)), Float(effect(.lightSweep)), Float(effect(.flash)), Float(effect(.inkBleed)))
+        uniforms.effects1 = SIMD4(Float(effect(.wordSwell)), Float(effect(.letterbox)), Float(effect(.duotone)), Float(shake))
+        uniforms.effectsPhase = SIMD4(Float(effects[.lightSweep]?.progress ?? 0), 0, 0, 0)
         setInk(&uniforms, time: time, layout: layout)
         let previous = slots.count > 1 ? slots[1] : nil
         uniforms.slots = SIMD4(current?.art == nil ? 0 : 1, previous?.art == nil ? 0 : 1,
@@ -428,6 +464,12 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
 
     /// Text sizes to try, widest first (scene units: frame height = 1): (max width, font, lines).
     /// One long line running along the crease reads best; wrap only when it won't fit.
+    /// Is a letterbox up, or due within the next few seconds?
+    private func letterboxSoon(position: Double?) -> Bool {
+        guard let position, let timeline = effectCache?.timeline ?? effectTimeline(tempo: nil) else { return false }
+        return timeline.events.contains { $0.kind == .letterbox && $0.start < position + 5 && $0.end > position }
+    }
+
     /// Sizes to try for a line the score marks big or as a whisper.
     nonisolated static func sizes(for emphasis: TrackScore.Emphasis) -> [(width: Double, font: Double, lines: Int)] {
         switch emphasis {
@@ -554,11 +596,17 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             if let lyric = input.lyric {
                 // The score may ask for a line to be big or a whisper, and where on screen.
                 let treatment = score?.treatment(line: lyric.id)
-                let band: ClosedRange<Double>? = switch treatment?.placement ?? .any {
+                var band: ClosedRange<Double>? = switch treatment?.placement ?? .any {
                 case .any: nil
                 case .upper: 0...0.55
                 case .middle: 0.2...0.8
                 case .lower: 0.45...1
+                }
+                // Letterbox bars now or coming while the line is up: keep it between them.
+                if letterboxSoon(position: input.trackPosition) {
+                    let safe = 0.19...0.81
+                    band = band.map { max($0.lowerBound, safe.lowerBound)...min($0.upperBound, safe.upperBound) } ?? safe
+                    if let b = band, b.lowerBound >= b.upperBound { band = safe }
                 }
                 let sizes = Self.sizes(for: treatment?.emphasis ?? .normal)
                 let placed = printable(aspect: layout.aspect, hasArt: hasArt, time: time, band: band)
@@ -614,7 +662,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
 
     /// Ink for the flat backgrounds, from how light the album's colours are overall.
     private var flatTone: Float {
-        if currentBackground == .googie { return 1 }  // cream ground
+        if [.googie, .collage, .risograph].contains(currentBackground) { return 1 }  // cream grounds
         let colours = (slots.first?.look.palette ?? .neutral).colors
         let mean = colours.reduce(Float(0)) { $0 + $1.luminance } / Float(max(1, colours.count))
         return mean > 0.45 ? 1 : 2
@@ -678,17 +726,22 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     }
 
     private func setInk(_ uniforms: inout SceneUniforms, time: Double, layout: FoldLayout) {
-        func blur(_ opacity: Double, exiting: Bool) -> Float { Float(exiting ? (1 - opacity) * 3 : (1 - opacity) * 4.5) }
-        func lyric(_ slot: PrintedSlot?) -> (SIMD4<Float>, SIMD4<Float>) {
+        // Ink bleed softens and spreads the words; word swell pulses the line on screen.
+        let bleed = effect(.inkBleed), swell = effect(.wordSwell)
+        func blur(_ opacity: Double, exiting: Bool) -> Float {
+            Float((exiting ? (1 - opacity) * 3 : (1 - opacity) * 4.5) + bleed * 2.2)
+        }
+        func lyric(_ slot: PrintedSlot?, current: Bool) -> (SIMD4<Float>, SIMD4<Float>) {
             guard let slot, let f = slotFrame(slot, layout: layout) else { return (.zero, .zero) }
-            let o = slotOpacity(slot, time: time)
-            return (SIMD4(Float(f.centre.x), Float(f.centre.y), Float(slot.size.x / 2), Float(slot.size.y / 2)),
+            let o = min(1, slotOpacity(slot, time: time) * (1 + bleed * 0.3))
+            let scale = current ? 1 + 0.07 * swell : 1
+            return (SIMD4(Float(f.centre.x), Float(f.centre.y), Float(slot.size.x / 2 * scale), Float(slot.size.y / 2 * scale)),
                     SIMD4(Float(f.angle), Float(o), blur(o, exiting: slot.exitedAt != nil), slot.tone))
         }
         let newest = lyricSlots.last
         let older = lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2] : nil
-        (uniforms.ink0a, uniforms.ink0b) = lyric(newest)
-        (uniforms.ink1a, uniforms.ink1b) = lyric(older)
+        (uniforms.ink0a, uniforms.ink0b) = lyric(newest, current: newest?.exitedAt == nil)
+        (uniforms.ink1a, uniforms.ink1b) = lyric(older, current: false)
         func words(_ slot: PrintedSlot?) -> (Float, Float) {
             guard let slot, let shown = slot.revealedWords, slot.exitedAt == nil else { return (0, 0) }
             return (Float(slot.words), Float(shown))
@@ -777,6 +830,9 @@ struct SceneUniforms {
     var camera: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0))
 
     var strip = SIMD4<Float>()
+    var effects0 = SIMD4<Float>()
+    var effects1 = SIMD4<Float>()
+    var effectsPhase = SIMD4<Float>()
 
     mutating func setCamera(_ m: simd_double3x3) {
         let r = m.transpose

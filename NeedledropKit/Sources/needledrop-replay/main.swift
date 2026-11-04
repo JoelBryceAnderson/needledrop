@@ -324,7 +324,9 @@ case "still":
         input.lyricsAvailable = !lyricLines.isEmpty
         if let (lyrics, timeline) = lrc {
             // The song's own timing: the position is the frame time.
-            renderer.score = score?.sanitized(for: timeline)
+            if renderer.scoreTimeline == nil { renderer.scoreTimeline = timeline }
+            if renderer.score == nil { renderer.score = score?.sanitized(for: timeline) }
+            input.trackPosition = t
             input.lyricsAvailable = true
             input.nextLyricIn = lyrics.nextLineStart(after: t).map { $0 - t }
             input.nextLyricIndex = lyrics.nextLineIndex(after: t)

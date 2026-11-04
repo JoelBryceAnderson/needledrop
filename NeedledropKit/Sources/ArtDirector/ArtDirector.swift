@@ -145,7 +145,9 @@ public actor ArtDirector {
         to light; the two lightest/middle ones become the main paper colours).
         - background: "paper" (one sheet folded along a few long straight creases, each strip \
         lit by its own angle), "googie" (mid-century atomic-age: starbursts, boomerangs, kidney \
-        shapes in flat colour), or "custom" (your own animated fragment shader, below). Use \
+        shapes in flat colour), "collage" (cut-paper: big torn shapes in your colours, layered \
+        with shadows), "risograph" (two of your colours printed as inks slightly out of register \
+        on cream paper, with a coarse grain), or "custom" (your own animated fragment shader, below). Use \
         custom only when the album calls for something the built-ins can't do.
         - folds: angle_degrees (-45…45, the creases' lean) and count (2…4). Lyrics are set \
         along these creases, so they shape the whole composition, whatever the background.

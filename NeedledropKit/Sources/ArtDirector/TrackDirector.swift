@@ -28,7 +28,7 @@ public struct TrackBrief: Sendable, Equatable {
     public var key: String {
         let lyrics = timeline.lines.map { "\($0.index):\($0.text)" }.joined(separator: "\n")
         let hash = SHA256.hash(data: Data(lyrics.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
-        return "score-v1|\(artist.lowercased())|\(title.lowercased())|\(hash)"
+        return "score-v2|\(artist.lowercased())|\(title.lowercased())|\(hash)"
     }
 }
 
@@ -68,7 +68,7 @@ public actor TrackDirector {
                                           effort: effort, maxTokens: 12_000)
         var score = try decode(reply.text).sanitized(for: brief.timeline)
 
-        let issues = ScoreChecker.check(score, timeline: brief.timeline, style: brief.style)
+        let issues = ScoreChecker.check(score, timeline: brief.timeline, style: brief.style, tempo: brief.tempo)
         if !issues.isEmpty {
             messages.append(["role": "assistant", "content": reply.content])
             messages.append(["role": "user", "content": [["type": "text", "text": """
@@ -90,14 +90,17 @@ public actor TrackDirector {
     /// treatments that don't fit (those lines are set normally).
     static func dropFailures(_ score: TrackScore, brief: TrackBrief) -> (TrackScore, [String]) {
         var s = score
-        let issues = ScoreChecker.check(score, timeline: brief.timeline, style: brief.style)
+        let issues = ScoreChecker.check(score, timeline: brief.timeline, style: brief.style, tempo: brief.tempo)
+        var droppedEffects = IndexSet()
         for issue in issues {
             switch issue.kind {
             case .keyframe(let line): s.keyframes.removeAll { $0.beforeLine == line }
             case .line(let line): s.lines.removeAll { $0.line == line }
             case .section(let line): s.sections.removeAll { $0.startLine == line }
+            case .effect(let index): droppedEffects.insert(index)
             }
         }
+        s.effects = s.effects.enumerated().filter { !droppedEffects.contains($0.offset) }.map(\.element)
         return (s, issues.map(\.message))
     }
 
@@ -140,7 +143,32 @@ public actor TrackDirector {
         return out.joined(separator: "\n")
     }
 
-    public static let system = """
+    /// The effects, described from the library itself (so prompt, checker and renderer agree).
+    static var effectGuide: String {
+        Effect.Kind.allCases.map { kind in
+            let i = kind.info
+            let over = i.maxOverLine < 1 ? String(format: "; at most %.1f while a line is up", i.maxOverLine) : ""
+            return String(format: "  - %@: %@ (%g beats typical, %g–%g%@)", kind.rawValue, i.summary, i.defaultBeats,
+                          i.beats.lowerBound, i.beats.upperBound, over)
+        }.joined(separator: "\n")
+    }
+
+    public static var system: String { systemIntro + "\n" + effectsSection + "\n" + systemOutro }
+
+    static var effectsSection: String {
+        """
+        - effects: accents at exact moments, on top of the moves. Each is anchored to a line \
+        (at_line, with at_line_text = its first three words) plus offset_beats from that line's \
+        start (negative lands in the gap before it, e.g. −1 for a hit just before the line), \
+        duration_beats and intensity 0–1. Effects may land while a line is up. At most \
+        \(ScoreChecker.maximumConcurrentEffects) at once. Available:
+        \(effectGuide)
+        Use them like a video editor uses accents: a handful per song, on the moments that \
+        matter (a drop, the last chorus, a key word), not on every line.
+        """
+    }
+
+    static let systemIntro = """
         You are the art director for Needledrop, which turns a living-room TV into a visual \
         world for the record playing: a sheet of folded paper in the album's colours, with the \
         lyrics printed along its creases, one line at a time, and a small now-playing strip in \
@@ -175,6 +203,9 @@ public actor TrackDirector {
         typewriter; hold = stay up until the next line starts (no gap after it, so no move — \
         use it to keep a couplet together). Only list lines you want to change; most lines need \
         nothing.
+        """
+
+    static let systemOutro = """
         - notes: one sentence on the idea.
 
         The medium is a 65" TV over composite video at 480 lines: big, bold, deliberate moves \
@@ -203,6 +234,14 @@ public actor TrackDirector {
             "transition": choice(TrackScore.Transition.allCases.map(\.rawValue)),
             "palette": choice(TrackScore.PaletteMove.allCases.map(\.rawValue)),
         ])
+        let effect = object([
+            "effect": choice(Effect.Kind.allCases.map(\.rawValue)),
+            "at_line": ["type": "integer"],
+            "at_line_text": ["type": "string"],
+            "offset_beats": ["type": "number"],
+            "duration_beats": ["type": "number"],
+            "intensity": ["type": "number"],
+        ])
         let line = object([
             "line": ["type": "integer"],
             "text": ["type": "string"],
@@ -215,6 +254,7 @@ public actor TrackDirector {
             "sections": ["type": "array", "items": section],
             "keyframes": ["type": "array", "items": keyframe],
             "lines": ["type": "array", "items": line],
+            "effects": ["type": "array", "items": effect],
             "notes": ["type": "string"],
         ])
     }
