@@ -223,6 +223,39 @@ plays. Big tiles in three rows drift slowly sideways, with play counts, "most sp
 month" and "on this day". It fades in 25 s into idle, after the scene has faded. The
 "When idle" setting can choose plain black instead.
 
+## Made in Milestone 8
+
+**Calibration is arithmetic on three measurements.** The setup assistant measures lead-in
+groove noise (median), music (60th percentile) and needle up (median) of the gated
+music-band level, and places the thresholds:
+- **stop:** just above the noise;
+- **start:** about 45% of the way to the music, at least 8 dB over the noise;
+- **needle-up floor:** halfway between needle-up and noise when they're at least 6 dB apart.
+
+It warns when the levels are too close to separate reliably. Gain advice aims for peaks
+around −9 dBFS.
+
+**Recovery:**
+- a stall watchdog: no audio time advancing for 5 s while the source says it's running →
+  restart, backing off 20 s;
+- an input restart 2 s after wake;
+- orphaned `.incoming` recordings moved to `Sides/Recovered …` at launch;
+- the display kept awake (`idleDisplaySleepDisabled`) only while a side plays.
+
+**Without a turntable, in order of preference:**
+1. Apple Music or Spotify say exactly what's playing: their system player-info
+   notifications, plus AppleScript for position, and to ask what's playing at launch or
+   side start, because they only announce changes.
+2. A song file's own tags.
+3. Naming the track by hand.
+
+Audio comes from a Core Audio process tap of everything except Needledrop. Streamed audio
+is never archived. Metadata search must match both title and artist; an exact title alone
+once let another artist's song win.
+
+**CI** runs `swift test` and an unsigned app build on GitHub's macOS runners. Suites that
+render skip themselves when the runner has no Metal device.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

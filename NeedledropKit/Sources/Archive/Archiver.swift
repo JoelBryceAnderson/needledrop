@@ -259,6 +259,33 @@ public actor Archiver {
         return file.path
     }
 
+    // MARK: - Crash recovery
+
+    /// Side recordings left in `.incoming` by a crash or power cut: moved to `Sides/` as
+    /// "Recovered …" so nothing played is lost (they can be re-split by hand). Call at launch,
+    /// before anything starts recording. Returns the recovered files.
+    @discardableResult
+    public static func recoverOrphans(root: URL) -> [URL] {
+        let fm = FileManager.default
+        let incoming = root.appendingPathComponent(".incoming", isDirectory: true)
+        guard let files = try? fm.contentsOfDirectory(at: incoming, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return [] }
+        let sides = root.appendingPathComponent("Sides", isDirectory: true)
+        var recovered: [URL] = []
+        for file in files where file.pathExtension == "caf" {
+            let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            // Under a second of audio isn't worth keeping.
+            guard (values?.fileSize ?? 0) > 400_000 else {
+                try? fm.removeItem(at: file)
+                continue
+            }
+            try? fm.createDirectory(at: sides, withIntermediateDirectories: true)
+            let date = values?.contentModificationDate ?? Date()
+            let destination = unique(sides.appendingPathComponent("Recovered \(stamp(date)).caf"))
+            if (try? fm.moveItem(at: file, to: destination)) != nil { recovered.append(destination) }
+        }
+        return recovered
+    }
+
     // MARK: - Names
 
     static func safe(_ name: String) -> String {

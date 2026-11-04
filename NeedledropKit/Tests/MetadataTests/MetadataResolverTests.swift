@@ -56,7 +56,7 @@ private let searchJSON = """
         #expect(m.trackNumber == 2 && m.trackCount == 11)
         #expect(m.duration == 257.8)
         #expect(m.collectionID == "1440832918")
-        #expect(m.artworkURL?.absoluteString.hasSuffix("1200x1200bb.jpg") == true)
+        #expect(m.artworkURL?.absoluteString.hasSuffix("3000x3000bb.jpg") == true)
     }
 
     @Test func searchPrefersTheOriginalAlbum() async {

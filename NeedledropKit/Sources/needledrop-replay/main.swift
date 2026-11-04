@@ -193,7 +193,7 @@ case "synth":
     // metadata, artwork and lyrics with nothing fetched and nothing licensed.
     let directory = url.deletingLastPathComponent()
     let base = url.deletingPathExtension().lastPathComponent
-    let album = "Paper Weather", artist = "The Creases"
+    let album = "Crease Patterns", artist = "The Valley Fold Society"
     let songs: [(title: String, lyrics: [(Double, String)])] = [
         ("Paper Weather", [(2, "Paper weather in the morning"), (5.5, "Folding light along the floor"),
                            (9, "Every crease a little warning"), (12.5, "Every edge an open door"),

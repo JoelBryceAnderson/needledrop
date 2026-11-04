@@ -3,7 +3,13 @@
 Drop the needle and the TV comes alive. See the project brief for the full vision; this
 README covers how the code is laid out and how to work on it.
 
-**Status: Milestone 7 (Polish), the last milestone in the brief.**
+**Status: Milestone 8 (Ready for daily use).**
+- **Setup:** a setup assistant (gain, level calibration, output latency, launch at login).
+- **Recovery:** after stalls, sleep and crashes.
+- **Without a turntable:** inputs for this Mac's audio, Apple Music and Spotify, song files, and naming a track by hand.
+- **CI** on every PR.
+
+Setup checklist: [docs/FIRST-RUN.md](docs/FIRST-RUN.md). Before that, **Milestone 7 (Polish)**:
 - **Typewriter lyrics:** words print one at a time, timed by syllables and nudged onto the beat.
 - **Cover modes:** the cover can dissolve into paper shards on transients, or become a virtual record (spinning at 33⅓ or 45, with a tonearm that tracks the side).
 - **Side end:** the picture winds down like a record slowing and prints "Side A complete — flip for side B".

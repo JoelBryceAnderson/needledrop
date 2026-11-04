@@ -12,7 +12,7 @@ public enum CoverArtGenerator {
         public var colors: [CGColor]
     }
 
-    /// Deep teal, ochre sun, rust stripes, cream — for "Paper Weather".
+    /// Deep teal, ochre sun, rust stripes, cream — for the demo album, "Crease Patterns".
     public static let paperWeather = Scheme(
         background: CGColor(srgbRed: 0.07, green: 0.20, blue: 0.23, alpha: 1),
         colors: [

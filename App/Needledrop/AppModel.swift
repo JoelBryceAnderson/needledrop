@@ -52,6 +52,12 @@ final class AppModel {
     private(set) var idleSince: Date?
     private let playerWatcher = PlayerWatcher()
     private let setup = SetupPresenter()
+    // Recovery.
+    private var stall = StallDetector()
+    private var watchdog: Timer?
+    private var wakeObserver: NSObjectProtocol?
+    /// Keeps the display (the TV) awake while music plays.
+    private var displayAwake: NSObjectProtocol?
     /// A track a music app announced, waiting for Needledrop to hear it start.
     private var pendingPlayerTrack: (track: PlayerTrack, position: Double?, received: Date)?
     private var applyingPlayerTrack = false
@@ -129,6 +135,11 @@ final class AppModel {
     }
 
     func launch() async {
+        // A crash or power cut mid-side leaves a raw recording behind: keep it.
+        for file in Archiver.recoverOrphans(root: settings.archive.root) {
+            append("Recovered an interrupted side recording: Sides/\(file.lastPathComponent)")
+        }
+        startRecoveryWatch()
         refreshDevices()
         await restartInput()
         if settings.followMusicApps { playerWatcher.checkNow() }
@@ -290,6 +301,7 @@ final class AppModel {
             } else if idleSince != nil {
                 idleSince = nil
             }
+            keepDisplayAwake(phase != .idle && phase != .sideEnded)
         case .pipeline(.recognition): break
         case .trackChanged(let track):
             metadata = nil
@@ -486,11 +498,54 @@ final class AppModel {
         case .googie: .googie
         }
         renderer?.showCover = settings.showCover
+        renderer?.renderResolution = settings.renderResolution
         renderer?.coverModeOverride = switch settings.cover {
         case .auto: nil
         case .living: .living
         case .dissolve: .dissolve
         case .record: .record
+        }
+    }
+
+    // MARK: - Recovery
+
+    private func startRecoveryWatch() {
+        // No audio arriving while the source says it's running: restart it.
+        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkForStall() }
+        }
+        // Audio engines often don't survive sleep.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.append("Mac woke up: restarting input")
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    await self.restartInput()
+                }
+            }
+        }
+    }
+
+    private func checkForStall() {
+        let snapshot = pipeline.snapshot()
+        var running = false
+        if case .running = snapshot.sourceStatus { running = true }
+        if stall.update(now: ProcessInfo.processInfo.systemUptime, audioTime: snapshot.features.time, running: running) {
+            append("No audio arriving from \(snapshot.sourceName ?? "the input"): restarting it")
+            Task { await restartInput() }
+        }
+    }
+
+    private func keepDisplayAwake(_ awake: Bool) {
+        if awake, displayAwake == nil {
+            displayAwake = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .userInitiated],
+                                                                 reason: "Showing visuals for the music playing")
+        } else if !awake, let activity = displayAwake {
+            ProcessInfo.processInfo.endActivity(activity)
+            displayAwake = nil
         }
     }
 

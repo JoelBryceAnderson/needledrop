@@ -98,14 +98,28 @@ public actor MetadataResolver {
         return resolved
     }
 
-    /// Artwork bytes, cached per album (or per URL when there's no album ID).
+    /// Artwork bytes, cached per album (or per URL when there's no album ID). iTunes
+    /// artwork comes at 3000 px (falling back to 1200 px if that size isn't served).
     public func artwork(for metadata: TrackMetadata) async -> Data? {
         guard let url = metadata.artworkURL else { return nil }
-        let file = cacheDirectory.appendingPathComponent("artwork/\(Self.hash(metadata.collectionID ?? url.absoluteString)).img")
+        let file = cacheDirectory.appendingPathComponent("artwork/3000-\(Self.hash(metadata.collectionID ?? url.absoluteString)).img")
         if let data = try? Data(contentsOf: file) { return data }
-        guard let data = try? await http.get(url, headers: userAgentHeader) else { return nil }
-        try? data.write(to: file, options: .atomic)
-        return data
+        for candidate in Self.artworkCandidates(url) {
+            if let data = try? await http.get(candidate, headers: userAgentHeader), !data.isEmpty {
+                try? data.write(to: file, options: .atomic)
+                return data
+            }
+        }
+        return nil
+    }
+
+    /// Largest first. Older cached metadata may still name the 1200 px rendition.
+    static func artworkCandidates(_ url: URL) -> [URL] {
+        let s = url.absoluteString
+        guard s.contains("1200x1200bb") || s.contains("100x100bb") else { return [url] }
+        let large = s.replacingOccurrences(of: "1200x1200bb", with: "3000x3000bb").replacingOccurrences(of: "100x100bb", with: "3000x3000bb")
+        let medium = large.replacingOccurrences(of: "3000x3000bb", with: "1200x1200bb")
+        return [large, medium].compactMap(URL.init(string:))
     }
 
     // MARK: - iTunes API
@@ -164,7 +178,7 @@ public actor MetadataResolver {
 
     /// iTunes serves any size by rewriting the dimensions in the URL.
     static func highResolutionArtwork(_ url: String) -> URL? {
-        URL(string: url.replacingOccurrences(of: "100x100bb", with: "1200x1200bb"))
+        URL(string: url.replacingOccurrences(of: "100x100bb", with: "3000x3000bb"))
     }
 
     /// "Rumours (Remastered)" → "Rumours"; we want the record's name, not the reissue's.

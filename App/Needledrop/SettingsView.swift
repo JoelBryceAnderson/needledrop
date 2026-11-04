@@ -246,6 +246,10 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Picker("Render resolution", selection: $model.settings.renderResolution) {
+                Text("Auto (sharp on this screen, 480 lines on a TV converter)").tag(VisualsRenderer.RenderResolution.auto)
+                Text("TV (always 480 lines)").tag(VisualsRenderer.RenderResolution.tv)
+            }
             Picker("When idle", selection: $model.settings.idleScreen) {
                 Text("Library wall").tag(IdleScreen.libraryWall)
                 Text("Black").tag(IdleScreen.black)

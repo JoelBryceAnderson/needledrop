@@ -81,6 +81,21 @@ import Testing
 }
 
 @Suite struct ArchiverTests {
+    @Test func orphanedRecordingsAreRecoveredNotLost() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("needledrop-orphans-\(UUID())")
+        let incoming = root.appendingPathComponent(".incoming", isDirectory: true)
+        try FileManager.default.createDirectory(at: incoming, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data(count: 1_000_000).write(to: incoming.appendingPathComponent("a.caf"))
+        try Data(count: 10).write(to: incoming.appendingPathComponent("tiny.caf"))
+
+        let recovered = Archiver.recoverOrphans(root: root)
+        #expect(recovered.count == 1)
+        #expect(recovered[0].lastPathComponent.hasPrefix("Recovered "))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty)
+        #expect(Archiver.recoverOrphans(root: root).isEmpty)
+    }
+
     @Test func metadataArrivingBeforeTheTrackIsStillUsed() async throws {
         let archiver = Archiver(settings: ArchiveSettings(), library: nil)
         var info = TrackMetadata(title: "Dreams", artist: "Fleetwood Mac")
