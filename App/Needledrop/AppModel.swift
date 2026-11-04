@@ -1,6 +1,7 @@
 import AppKit
 import AudioCapture
 import Foundation
+import Lyrics
 import Metadata
 import Observation
 import Pipeline
@@ -42,6 +43,7 @@ final class AppModel {
 
     private var eventTask: Task<Void, Never>?
     private let metadataResolver = MetadataResolver(cacheDirectory: MetadataResolver.defaultCacheDirectory)
+    private let lyricsProvider = LyricsProvider(cacheDirectory: MetadataResolver.defaultCacheDirectory)
 
     init() {
         let settings = AppSettings.load()
@@ -57,14 +59,21 @@ final class AppModel {
         renderer?.inputProvider = { [weak self] in self?.visualInput() ?? VisualInput() }
     }
 
+    /// Everything is read `outputLatency` behind the newest audio, so picture and words
+    /// line up with what the room hears rather than what the Mac hears.
     private func visualInput() -> VisualInput {
-        let snapshot = pipeline.snapshot()
-        let phase = engine.session().phase
-        return VisualInput(
-            features: snapshot.features,
-            beatAge: snapshot.lastBeatTime.map { snapshot.features.time - $0 },
-            active: phase != .idle && phase != .sideEnded
-        )
+        let (features, beatAge) = pipeline.features(delayedBy: settings.outputLatency)
+        let session = engine.session()
+        var input = VisualInput(features: features, beatAge: beatAge,
+                                active: session.phase != .idle && session.phase != .sideEnded)
+        if settings.showLyrics, let lyrics = session.lyrics, lyrics.isSynced, !lyrics.instrumental,
+           let clock = session.clock, clock.confidence(at: features.time) > 0.15 {
+            input.lyricsAvailable = true
+            if let cue = lyrics.cue(at: clock.position(at: features.time)) {
+                input.lyric = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
+            }
+        }
+        return input
     }
 
     func launch() async {
@@ -116,7 +125,8 @@ final class AppModel {
             }
         }
 
-        let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver)
+        let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver,
+                            lyrics: lyricsProvider)
         self.engine = engine
         eventTask = Task { [weak self] in
             for await event in engine.events {
@@ -207,6 +217,14 @@ final class AppModel {
             artwork = data.flatMap(NSImage.init(data:))
             nowPlayingSince = Date()
             updateLook(for: info)
+        case .lyrics(let lyrics):
+            if let lyrics, lyrics.instrumental {
+                append("Instrumental — no lyrics")
+            } else if let lyrics, lyrics.isSynced {
+                append("Lyrics: \(lyrics.lines.filter { !$0.text.isEmpty }.count) synced lines")
+            } else {
+                append(lyrics?.plain == nil ? "No lyrics found" : "Only unsynced lyrics found")
+            }
         case .recognitionError(let message):
             append("✖ \(message)")
         }

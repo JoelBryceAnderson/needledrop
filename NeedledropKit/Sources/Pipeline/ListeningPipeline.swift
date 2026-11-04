@@ -56,6 +56,7 @@ public final class ListeningPipeline: @unchecked Sendable {
     private let shared: Mutex<PipelineSnapshot>
     private let pendingFormat = Mutex<CaptureFormat?>(nil)
     private let pendingConfig = Mutex<SideDetectorConfig?>(nil)
+    private let history = Mutex(FeatureHistory())
     private let running = Atomic<Bool>(false)
     private let sourceFinished = Atomic<Bool>(false)
     private var source: (any AudioSource)?
@@ -82,6 +83,11 @@ public final class ListeningPipeline: @unchecked Sendable {
 
     public func snapshot() -> PipelineSnapshot {
         shared.withLock { $0 }
+    }
+
+    /// Features `delay` seconds behind the newest (up to `FeatureHistory.maximumDelay`).
+    public func features(delayedBy delay: Double) -> (features: AudioFeatures, beatAge: Double?) {
+        history.withLock { $0.features(delayedBy: delay) }
     }
 
     /// Adds an event to the stream, in order with the pipeline's own events when called
@@ -191,6 +197,7 @@ public final class ListeningPipeline: @unchecked Sendable {
 
     private func publish(_ features: AudioFeatures, _ sideEvents: [SideEvent], core: AnalysisCore) {
         let hopDuration = core.parameters.hopDuration
+        history.withLock { $0.append(features) }
         working.features = features
         working.phase = core.detector.phase
         working.gatedLevelDB = core.detector.gatedLevelDB

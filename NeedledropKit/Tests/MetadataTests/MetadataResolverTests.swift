@@ -13,7 +13,7 @@ private final class FakeHTTP: HTTPClient {
         self.routes = routes.map { ($0.0, Data($0.1.utf8)) }
     }
 
-    func data(from url: URL) async throws -> Data {
+    func get(_ url: URL, headers: [String: String]) async throws -> Data {
         requests.withLock { $0.append(url) }
         guard let route = routes.first(where: { url.absoluteString.contains($0.0) }) else { throw URLError(.fileDoesNotExist) }
         return route.1
