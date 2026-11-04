@@ -682,6 +682,17 @@ enum Shaders {
         return float4(customScene(in.uv, u, u.palette0), 1.0);
     }
 
+    // The background alone, as it is on screen (camera, letterbox), small: what the lyric
+    // layout reads to find calm, readable places for words. No ink, cover or strip.
+    fragment float4 layout_probe_fragment(VOut in [[stage_in]], constant Uniforms &u [[buffer(0)]]) {
+        int background = int(u.style.x + 0.5);
+        float aspect = u.frame.x / u.frame.y;
+        float2 wuv = toWorld(in.uv, u);
+        float3 c = background == 0 ? sheetAt(float2(wuv.x * aspect, wuv.y), u, u.palette0)
+                                   : flatBackground(background, wuv, u, u.palette0);
+        return float4(letterbox(c, in.uv, u), 1.0);
+    }
+
     // Upscale the low-res scene to the drawable. Bilinear is already soft at 480 lines,
     // which is what we want for composite.
     fragment float4 present_fragment(VOut in [[stage_in]], texture2d<float> scene [[texture(0)]]) {

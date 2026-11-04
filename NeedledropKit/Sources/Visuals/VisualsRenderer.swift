@@ -168,6 +168,12 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     private let queue: any MTLCommandQueue
     private let scenePipeline: any MTLRenderPipelineState
     private let presentPipeline: any MTLRenderPipelineState
+    /// The background alone, small, read back for the lyric layout (see `LayoutField`).
+    private let probePipeline: any MTLRenderPipelineState
+    private var probe: LayoutProbe?
+    /// 1 = the background drifts freely, 0 = held still (eased).
+    private var holding = 1.0
+    private var frameCount = 0
     private let loader: MTKTextureLoader
     private let placeholder: any MTLTexture
     private var sceneTexture: (any MTLTexture)?
@@ -206,6 +212,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         var screenCentre: SIMD2<Double>?
         /// Dark (1) or light (2) ink, chosen once against the background where it's set.
         var tone: Float = 0
+        /// Set on a theme other than paper: where it sits (background scene units), not on a crease.
+        var fixed: (centre: SIMD2<Double>, angle: Double)?
     }
 
     /// The background being drawn (set each frame before text is placed).
@@ -240,6 +248,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         }
         scenePipeline = try pipeline("scene_fragment", format: .rgba16Float)
         presentPipeline = try pipeline("present_fragment", format: .bgra8Unorm)
+        probePipeline = try pipeline("layout_probe_fragment", format: .bgra8Unorm)
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
         placeholder = device.makeTexture(descriptor: descriptor)!
@@ -329,8 +338,10 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         // Side over: everything slows to a stop over ~3 s, like a record spinning down.
         windDown = input.sideEnded ? min(1, windDown + dt / 3) : max(0, windDown - dt / 0.8)
         let running = 1 - windDown * windDown * (3 - 2 * windDown)
-        // While a lyric is up the background holds nearly still; it moves between lines.
-        let holding = input.lyric != nil && motion > 0 ? 0.15 : 1
+        // While a lyric is up the background holds still (so the place its words were set
+        // stays as calm and readable as when they were set); it moves between lines.
+        let holdTarget = input.lyric != nil && motion > 0 ? 0.0 : 1.0
+        holding += (holdTarget - holding) * (1 - exp(-dt / (holdTarget < 0.5 ? 0.15 : 0.5)))
         flow += dt * (0.04 + 0.10 * Double(audio.level)) * style.speed * running * holding
         recordAngle = (recordAngle + dt * input.rpm / 60 * 2 * .pi * running).truncatingRemainder(dividingBy: 2 * .pi)
         // Dissolve: a transient scatters the shards in proportion to how loud it is; they
@@ -434,6 +445,11 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(captionSlot?.texture ?? placeholder, index: 6)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             encoder.endEncoding()
+        }
+        // Every few frames: the background alone, small, for the lyric layout to read.
+        frameCount += 1
+        if frameCount % 6 == 0, background != .custom {
+            encodeProbe(&uniforms, aspect: aspect, commandBuffer: commandBuffer)
         }
 
         let presentPass = MTLRenderPassDescriptor()
@@ -617,6 +633,17 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                 // Never drop a line: if it won't fit, let it share space with the line soaking
                 // out, then with the caption.
                 let relaxedAllowed = printable(aspect: layout.aspect, hasArt: hasArt, time: time, avoidCaption: false)
+                // Themes other than paper: placed by what's actually on screen, at the theme's angles.
+                if currentBackground != .paper,
+                   let spot = placeOnTheme(lyric.text, line: lyric.id, sizes: sizes, allowed: placed, blocked: blocked,
+                                           aspect: layout.aspect, sceneHeight: sceneHeight)
+                    ?? placeOnTheme(lyric.text, line: lyric.id, sizes: Self.lyricSizes, allowed: allowed, blocked: [],
+                                    aspect: layout.aspect, sceneHeight: sceneHeight) {
+                    lyricSlots.append(PrintedSlot(id: lyric.id, captionID: nil, texture: spot.texture, size: spot.size,
+                                                  spot: nil, enteredAt: time,
+                                                  words: LyricRasterizer.wordRanges(lyric.text).count,
+                                                  tone: spot.tone, fixed: (spot.centre, spot.angle)))
+                } else {
                 placing: for (obstacles, test, choices) in [(blocked, placed, sizes), (blocked, allowed, sizes),
                                                             (blocked, allowed, Self.lyricSizes), ([], allowed, Self.lyricSizes),
                                                             ([], relaxedAllowed, Self.lyricSizes)] {
@@ -630,6 +657,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                                                       tone: tone(at: layout.frame(for: spot, size: text.size).centre, layout: layout)))
                         break placing
                     }
+                }
                 }
             }
         }
@@ -669,7 +697,94 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     }
 
     /// Where a line sits: along its crease, wherever the crease is now.
+    private func encodeProbe(_ uniforms: inout SceneUniforms, aspect: Double, commandBuffer: any MTLCommandBuffer) {
+        let height = 90, width = max(1, Int((Double(height) * aspect).rounded()))
+        if probe?.width != width {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .shared
+            guard let texture = device.makeTexture(descriptor: descriptor) else { return }
+            probe = LayoutProbe(width: width, height: height, texture: texture)
+        }
+        guard let probe else { return }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = probe.texture
+        pass.colorAttachments[0].loadAction = .dontCare
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+        encoder.setRenderPipelineState(probePipeline)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SceneUniforms>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+        commandBuffer.addCompletedHandler { _ in probe.readBack() }
+    }
+
+    /// Angles each theme sets its words at, in degrees: its own idea of intentional type.
+    static func themeAngles(_ background: LookStyle.Background) -> [Double] {
+        switch background {
+        case .paper: [0]                  // (paper sets words along its creases instead)
+        case .googie: [0, -7, 7]          // signage: level, or a jaunty tilt
+        case .collage: [-12, -5, 5, 12]   // cut out and pasted down at an angle
+        case .risograph: [0, -3]          // set square, as printed
+        case .smoke: [0]
+        case .custom: [0, -8, 8]
+        }
+    }
+
+    /// On a theme other than paper: the calmest place on screen, at one of the theme's angles,
+    /// where the words are readable (judged on the background as rendered) and clear of the
+    /// strip, the cover, the edges and the other line. Nil if the probe hasn't been read yet.
+    private func placeOnTheme(_ text: String, line: Int, sizes: [(width: Double, font: Double, lines: Int)],
+                              allowed: (SIMD2<Double>) -> Bool, blocked: [CGRect], aspect: Double,
+                              sceneHeight: Int) -> (texture: any MTLTexture, size: SIMD2<Double>, centre: SIMD2<Double>,
+                                                    angle: Double, tone: Float)? {
+        guard let field = probe?.current else { return nil }
+        let camera = shot.targetCamera
+        var best: (score: Double, texture: any MTLTexture, size: SIMD2<Double>, centre: SIMD2<Double>, angle: Double, tone: Float)?
+        // Lines take turns across the screen, so successive ones don't stack in one spot.
+        let preferredX = [0.36, 0.64, 0.5, 0.42, 0.58][abs(line) % 5] * aspect
+        // Crowded grounds need words that fit inside one shape or a narrow gap: smaller, wrapped.
+        let choices = Array(sizes.prefix(5)) + [(0.55, 0.055, 3), (0.45, 0.05, 3), (0.38, 0.045, 4)]
+        for size in choices {
+            guard let raster = lyricTexture(text, size: size, sceneHeight: sceneHeight) else { continue }
+            for degrees in Self.themeAngles(currentBackground) {
+                let angle = degrees * .pi / 180
+                let d = SIMD2(cos(angle), sin(angle)), n = SIMD2(-sin(angle), cos(angle))
+                for y in stride(from: 0.1, through: 0.88, by: 0.035) {
+                    for x in stride(from: 0.08, through: 0.92, by: 0.035) {
+                        let screen = SIMD2(x * aspect, y)
+                        let reading = field.read(centre: screen, angle: angle, size: raster.size, aspect: aspect)
+                        let score = Double(reading.busyness) * 6 - Double(min(0.35, reading.contrast)) * 1.5
+                            + abs(screen.x - preferredX) * 0.08 + abs(y - 0.45) * 0.1
+                        guard score < (best?.score ?? .infinity), reading.contrast > 0.18,
+                              let centre = camera.world(of: screen, aspect: aspect) else { continue }
+                        // The whole box must be printable and clear of the other line.
+                        var clear = true
+                        check: for i in 0...12 {
+                            for j in 0...2 {
+                                let p = centre + d * raster.size.x * (Double(i) / 12 - 0.5) + n * raster.size.y * (Double(j) / 2 - 0.5)
+                                if !allowed(p) || blocked.contains(where: { $0.contains(CGPoint(x: p.x, y: p.y)) }) {
+                                    clear = false
+                                    break check
+                                }
+                            }
+                        }
+                        if clear { best = (score, raster.texture, raster.size, centre, angle, reading.tone) }
+                    }
+                }
+            }
+            // The biggest size that sits on calm ground is the one; otherwise a smaller size that
+            // fits inside one area beats a big one across an edge.
+            if let best, best.score < 0 { break }
+        }
+        if ProcessInfo.processInfo.environment["NEEDLEDROP_DEBUG_LAYOUT"] != nil, let best {
+            print("placed line \(line) score \(best.score) at \(best.centre) angle \(best.angle) size \(best.size)")
+        }
+        return best.map { ($0.texture, $0.size, $0.centre, $0.angle, $0.tone) }
+    }
+
     private func slotFrame(_ slot: PrintedSlot, layout: FoldLayout) -> (centre: SIMD2<Double>, angle: Double)? {
+        if let fixed = slot.fixed { return fixed }
         guard let spot = slot.spot, spot.crease < layout.creases.count else { return nil }
         return layout.frame(for: spot, size: slot.size)
     }

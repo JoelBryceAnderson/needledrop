@@ -68,3 +68,36 @@ import Testing
         #expect(score.notes == "from before effects")
     }
 }
+
+@Suite struct LayoutFieldTests {
+    /// A cream ground with a navy block on the left and a purple one beside it (similar
+    /// lightness, different colour).
+    func field() -> LayoutField {
+        let w = 160, h = 90
+        var rgb = [SIMD3<Float>](repeating: SIMD3(0.92, 0.88, 0.8), count: w * h)
+        for y in 20..<70 {
+            for x in 10..<60 { rgb[y * w + x] = SIMD3(0.1, 0.15, 0.32) }
+            for x in 60..<100 { rgb[y * w + x] = SIMD3(0.3, 0.18, 0.4) }
+        }
+        return LayoutField(width: w, height: h, rgb: rgb)
+    }
+
+    let aspect = 16.0 / 9
+
+    @Test func flatGroundIsCalmAndAnEdgeIsBusy() {
+        let f = field()
+        let insideNavy = f.read(centre: SIMD2(0.35 * aspect / 1.6, 0.5), angle: 0, size: SIMD2(0.2, 0.05), aspect: aspect)
+        let acrossColours = f.read(centre: SIMD2(60.0 / 160 * aspect, 0.5), angle: 0, size: SIMD2(0.3, 0.05), aspect: aspect)
+        let cream = f.read(centre: SIMD2(1.5, 0.12), angle: 0, size: SIMD2(0.3, 0.05), aspect: aspect)
+        #expect(insideNavy.busyness < 0.05)
+        #expect(cream.busyness < 0.05)
+        // Navy and purple are close in lightness, but the colour edge still counts.
+        #expect(acrossColours.busyness > 0.2)
+    }
+
+    @Test func inkTakesTheToneThatStandsOut() {
+        let f = field()
+        #expect(f.read(centre: SIMD2(1.5, 0.12), angle: 0, size: SIMD2(0.3, 0.05), aspect: aspect).tone == 1)
+        #expect(f.read(centre: SIMD2(0.35 * aspect / 1.6, 0.5), angle: 0, size: SIMD2(0.2, 0.05), aspect: aspect).tone == 2)
+    }
+}

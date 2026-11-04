@@ -284,6 +284,24 @@ swap or mute, transition), and per-line emphasis, placement, animation and hold.
   can be changed in Settings.
 - **Cached per track and lyric version.** The album's next track is scored ahead of time.
 
+## Made in Milestone 10
+
+**Timed effects are one library entry each** (`Effect.Kind.info`): description, scope, beat range,
+GPU cost and how strong it may be over a lyric line. Claude's prompt and schema, the dry run and the
+renderer all read from it, so they can't drift apart. Effects are anchored to a lyric line plus beats,
+like keyframes.
+
+**Every theme places lyrics by what's on screen.** A 160×90 probe render of the background alone
+(camera and letterbox included) is read back every few frames. Each theme proposes placements in its
+own idiom, such as Googie's tilted signage or collage's pasted-down angles. The calmest spot wins:
+- **Busyness is measured in colour, not lightness,** because navy beside purple is an edge.
+- **Smaller wrapped sizes are allowed,** so on crowded grounds a line fits inside one shape.
+- **The ink tone comes from the measured ground.**
+
+Paper keeps its creases. The background holds still while a line is up, so a calm spot stays calm.
+
+**Lyrics on busy grounds get a soft halo** in the opposite tone, as a backstop.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),
