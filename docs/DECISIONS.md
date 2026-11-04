@@ -27,6 +27,37 @@ PLL nudged by onsets. It's good enough to drive visuals, not to do beat-matching
 thread. It holds about 21 s at 48 kHz, so overflow means the analysis thread stalled. The count
 shows on the overlay in red. Replay waits for space instead of dropping.
 
+## Made in Milestone 2
+
+**The session machine is a pure reducer driven by audio time; the `Engine` actor runs it.**
+Inputs are side events, 4 Hz ticks from the pipeline, matches and track durations. Outputs
+are effects: open/close a matching window, track changed. With no clocks or I/O in the
+machine, the brief's state machine is unit-tested directly. Because time is audio time, a
+40× replay gives the same transitions as real time.
+
+**Matching windows, not continuous matching.** Shazam is fed only while a window is open
+(15 s maximum). Windows open at side start, after a gap, every 25 s while a track plays, and
+3 s after the track's known end (from the iTunes duration). That's enough to catch segues and
+correct drift without streaming to ShazamKit all side long. After 45 s with no match the track
+is marked unidentified, and the visuals carry on audio-reactively; retries continue every 30 s.
+
+**Playback clock:** anchors from matches. The rate is 1 + Shazam frequency skew until
+anchors span 40 s, then a least-squares slope (clamped ±6%). Corrections under 3 s are
+slewed in over 2 s so lyrics never jump. Bigger ones snap, because that means the needle was moved.
+Confidence falls with staleness and with the size of the last correction.
+
+**Recognition results go through the pipeline's event stream** (`ListeningPipeline.post`),
+not a separate stream. With two streams, a match could be applied after the gap that
+followed it whenever the consumer lagged.
+
+**`.finished` is reported only after the ring buffer drains.** Before this, the end of a
+replay (including the side end in its trailing silence) could be lost.
+
+**Metadata:** iTunes lookup by Apple Music ID, falling back to a scored search that
+prefers exact title and artist and the original album over compilations. Album names are
+stripped of "(Remastered)"/"(Deluxe)" suffixes. Artwork is the 1200×1200 rendition, cached per
+album, and all metadata is cached on disk, so a familiar record never hits the network.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

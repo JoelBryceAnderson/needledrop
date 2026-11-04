@@ -4,5 +4,6 @@ Needledrop.xcodeproj/
 xcuserdata/
 DerivedData/
 Fixtures/*.wav
+Fixtures/*.tracks.json
 !Fixtures/.gitkeep
 .DS_Store

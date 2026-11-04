@@ -1,7 +1,10 @@
+import AppKit
 import AudioCapture
 import Foundation
+import Metadata
 import Observation
 import Pipeline
+import Recognition
 import ReplayHarness
 import ServiceManagement
 import SessionState
@@ -19,18 +22,23 @@ final class AppModel {
     var settings: AppSettings {
         didSet { settings.save() }
     }
-    private(set) var pipeline: ListeningPipeline
+    private(set) var engine: Engine
+    var pipeline: ListeningPipeline { engine.pipeline }
+    /// Current track's metadata and artwork, for the now-playing panel.
+    private(set) var metadata: TrackMetadata?
+    private(set) var artwork: NSImage?
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
     private(set) var microphoneDenied = false
     let presentation = PresentationController()
 
     private var eventTask: Task<Void, Never>?
+    private let metadataResolver = MetadataResolver(cacheDirectory: MetadataResolver.defaultCacheDirectory)
 
     init() {
         let settings = AppSettings.load()
         self.settings = settings
-        pipeline = ListeningPipeline(config: settings.detector)
+        engine = Engine(detector: settings.detector, recognizer: ShazamRecognizer(), metadata: nil)
     }
 
     func launch() async {
@@ -54,9 +62,12 @@ final class AppModel {
 
     func restartInput() async {
         eventTask?.cancel()
-        pipeline.stop()
+        await engine.stop()
+        metadata = nil
+        artwork = nil
 
         let source: any AudioSource
+        var recognizer: any TrackRecognizer = ShazamRecognizer()
         switch settings.input {
         case .systemDefault, .device:
             microphoneDenied = !(await MicrophoneAccess.request())
@@ -67,18 +78,27 @@ final class AppModel {
                 source = LiveInputSource(deviceUID: nil)
             }
         case .replay(let path):
-            source = FileReplaySource(url: URL(fileURLWithPath: path), loop: true)
+            let url = URL(fileURLWithPath: path)
+            source = FileReplaySource(url: url, loop: true)
+            do {
+                if let script = try ReplayScript.load(for: url) {
+                    recognizer = script.recognizer()
+                    append("Using \(ReplayScript.sidecarURL(for: url).lastPathComponent) instead of Shazam")
+                }
+            } catch {
+                append("Ignoring unreadable track sidecar: \(error.localizedDescription)")
+            }
         }
 
-        let pipeline = ListeningPipeline(config: settings.detector)
-        self.pipeline = pipeline
+        let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver)
+        self.engine = engine
         eventTask = Task { [weak self] in
-            for await event in pipeline.events {
+            for await event in engine.events {
                 self?.handle(event)
             }
         }
         do {
-            try pipeline.start(source: source)
+            try await engine.start(source: source)
         } catch {
             append("Couldn't start \(source.displayName): \(error.localizedDescription)")
         }
@@ -137,13 +157,27 @@ final class AppModel {
 
     // MARK: - Events
 
-    private func handle(_ event: PipelineEvent) {
+    private func handle(_ event: EngineEvent) {
         switch event {
-        case .source(.running(let format, let name)): append("● \(name) — \(format)")
-        case .source(.waitingForDevice(let what)): append("Waiting for \(what)")
-        case .source(.failed(let message)): append("✖ \(message)")
-        case .source(.finished): append("Replay finished")
-        case .side(let side): append(Self.describe(side))
+        case .pipeline(.source(.running(let format, let name))): append("● \(name) — \(format)")
+        case .pipeline(.source(.waitingForDevice(let what))): append("Waiting for \(what)")
+        case .pipeline(.source(.failed(let message))): append("✖ \(message)")
+        case .pipeline(.source(.finished)): append("Replay finished")
+        case .pipeline(.side(let side)): if let text = Self.describe(side) { append(text) }
+        case .pipeline(.tick), .pipeline(.recognition): break
+        case .trackChanged(let track):
+            metadata = nil
+            artwork = nil
+            if let track {
+                append("♫ \(track.artist) — \(track.title)")
+            } else if engine.session().unidentified {
+                append("Couldn't identify this record")
+            }
+        case .metadata(let info, let data):
+            metadata = info
+            artwork = data.flatMap(NSImage.init(data:))
+        case .recognitionError(let message):
+            append("✖ \(message)")
         }
     }
 
@@ -152,8 +186,10 @@ final class AppModel {
         if log.count > 100 { log.removeFirst(log.count - 100) }
     }
 
-    static func describe(_ event: SideEvent) -> String {
+    static func describe(_ event: SideEvent) -> String? {
         switch event {
+        case .gapStarted:
+            nil
         case .sideStarted:
             "Side started"
         case .trackGap(let start, let end, _):

@@ -45,6 +45,8 @@ public struct SideReport: Sendable {
             case .sideStarted(let t):
                 closeSide(end: nil, reason: nil)
                 current = (t, [])
+            case .gapStarted:
+                break
             case .trackGap(let start, let end, _):
                 current?.boundaries += [start, end]
             case .sideEnded(_, let end, let reason):
