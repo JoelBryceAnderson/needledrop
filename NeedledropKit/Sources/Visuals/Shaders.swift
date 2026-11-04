@@ -42,6 +42,7 @@ enum Shaders {
         // The camera over the background: rows of a homography from the screen (scene units,
         // centred) to the background plane (scene units). Perspective tilts live here.
         float4 camera[3];
+        float4 strip;   // the now-playing strip's backing: min.xy, max.xy (screen, scene units); 0 = none
     };
 
     struct VOut {
@@ -193,6 +194,16 @@ enum Shaders {
         return lum > 0.4 ? pal[0].rgb * 0.85 : mix(pal[5].rgb, float3(1.0), 0.45);
     }
 
+    /// A soft dark band behind the now-playing strip, so the small words read on any paper.
+    float3 stripBacking(float3 c, float2 suv, constant Uniforms &u) {
+        if (u.strip.z <= u.strip.x) return c;
+        float2 p = float2(suv.x * u.frame.x / u.frame.y, suv.y);
+        float2 centre = (u.strip.xy + u.strip.zw) * 0.5, extent = (u.strip.zw - u.strip.xy) * 0.5;
+        float2 d = abs(p - centre) - (extent - 0.02);
+        float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - 0.02;
+        return c * (1.0 - 0.6 * (1.0 - smoothstep(-0.006, 0.012, dist)));
+    }
+
     /// A line's ink: its tone was chosen once, when it was placed (1 dark, 2 light), so it
     /// never flickers as the paper's light moves; 0 falls back to choosing against `paper`.
     float3 toneColor(float tone, float3 paper, constant float4 *pal) {
@@ -258,7 +269,7 @@ enum Shaders {
         float aspect = u.frame.x / u.frame.y;
         float2 wuv = toWorld(suv, u);
         float2 q = float2(wuv.x * aspect, wuv.y);
-        float3 c = sheetAt(q, u, pal);
+        float3 c = stripBacking(sheetAt(q, u, pal), suv, u);
         float4 ink = inkOn(q, suv, u, pal, ink0, ink1, ink2);
         return mix(c, ink.rgb, ink.a * 0.92);
     }
@@ -492,7 +503,7 @@ enum Shaders {
             base = paper(uv, u, pal, ink0, ink1, ink2);
         } else {
             float2 wuv = toWorld(uv, u);
-            base = flatBackground(background, wuv, u, pal);
+            base = stripBacking(flatBackground(background, wuv, u, pal), uv, u);
             float ink = inkAt(wuv, uv, u, ink0, ink1, ink2);
             if (ink > 0.001) {
                 // One ink colour per line, chosen against the background at its centre.

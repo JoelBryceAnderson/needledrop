@@ -16,6 +16,7 @@ extension VisualsRenderer {
     @MainActor static func still() throws -> VisualsRenderer {
         let renderer = try VisualsRenderer()
         renderer.motion = 0
+        renderer.coverInStrip = false
         return renderer
     }
 }

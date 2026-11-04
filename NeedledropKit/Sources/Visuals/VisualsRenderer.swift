@@ -120,6 +120,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         get { choreographer.motion }
         set { choreographer.motion = min(1, max(0, newValue)) }
     }
+    /// The cover sits small in the now-playing strip beside the title (on by default);
+    /// off, the choreography places it.
+    public var coverInStrip = true
     private var choreographer = Choreographer()
     private var shot = Choreographer.Frame(cover: .hero, camera: .identity, targetCover: .hero,
                                            targetCamera: .identity, shot: "hero", cuts: 0,
@@ -332,6 +335,13 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         shotInput.lineShowing = input.lyric != nil
         shotInput.nextLineIn = input.lyricsAvailable ? input.nextLyricIn : nil
         shot = choreographer.update(shotInput)
+        // The cover lives in the now-playing strip, small and always there; the choreography
+        // moves the camera and the folds around it.
+        if coverInStrip {
+            let strip = Self.stripCover(aspect: aspect)
+            shot.cover = strip
+            shot.targetCover = strip
+        }
         if shot.moving { foldFlow += dt * style.speed * running }
         let layout = foldLayout(aspect: aspect, bass: Double(audio.bass))
         updatePrintedText(input, time: time, layout: layout, hasArt: current?.art != nil && showCover, sceneHeight: height)
@@ -357,6 +367,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         uniforms.scene = SIMD4(Float(windDown), Float(shot.cover.y), Float(shot.cover.rotation),
                                Float(shot.cover.visibility))
         uniforms.setCamera(shot.camera.worldFromScreen(aspect: aspect))
+        uniforms.strip = stripBacking(aspect: aspect, hasArt: current?.art != nil && showCover, time: time)
         setInk(&uniforms, time: time, layout: layout)
         let previous = slots.count > 1 ? slots[1] : nil
         uniforms.slots = SIMD4(current?.art == nil ? 0 : 1, previous?.art == nil ? 0 : 1,
@@ -397,7 +408,15 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
 
     private static let inkIn = 0.7
     private static let inkOut = 0.9
-    private static let captionHold = 8.0
+    /// The now-playing strip, bottom left: the cover (frame heights) and the gap to the words.
+    private static let stripMargin = 0.05
+    private static let stripCoverSize = 0.15
+    private static let stripGap = 0.03
+
+    static func stripCover(aspect: Double) -> CoverPose {
+        CoverPose(x: (stripMargin + stripCoverSize / 2) / aspect, y: 1 - stripMargin - stripCoverSize / 2,
+                  size: stripCoverSize)
+    }
 
     /// Text sizes to try, widest first (scene units: frame height = 1): (max width, font, lines).
     /// One long line running along the crease reads best; wrap only when it won't fit.
@@ -420,6 +439,13 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// (morphing during it). Two to four creases each, unless the art direction fixes the
     /// count: a few long seams for the words to sit on.
     private func foldLayout(aspect: Double, bass: Double) -> FoldLayout {
+        guard motion > 0, shot.composition > 0 else { return foldLayout(aspect: aspect, bass: bass, composition: 0) }
+        let to = foldLayout(aspect: aspect, bass: bass, composition: shot.composition)
+        guard shot.progress < 1 else { return to }
+        return foldLayout(aspect: aspect, bass: bass, composition: shot.composition - 1).morphed(to: to, shot.progress)
+    }
+
+    private func foldLayout(aspect: Double, bass: Double, composition: Int) -> FoldLayout {
         let style = currentStyle
         func make(_ composition: Int) -> FoldLayout {
             let seed = composition == 0 ? albumSeed : albumSeed ^ (UInt64(truncatingIfNeeded: composition) &* 0x9E37_79B9_7F4A_7C15)
@@ -429,10 +455,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                                    angle: angle, count: style.foldCount ?? 2 + Int(rng.unit() * 2.99),
                                    turbulence: style.turbulence)
         }
-        guard motion > 0, shot.composition > 0 else { return make(0) }
-        let to = make(shot.composition)
-        guard shot.progress < 1 else { return to }
-        return make(shot.composition - 1).morphed(to: to, shot.progress)
+        return make(composition)
     }
 
     static func crease(_ c: FoldLayout.Crease) -> SIMD4<Float> {
@@ -453,12 +476,19 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                              width: f.size.x + 0.04, height: f.size.y + 0.04)
         }
         let margin = 0.05  // room for the drift within a shot
+        // The now-playing strip is always there: keep a clear margin round all of it.
+        let backing = stripBacking(aspect: aspect, hasArt: hasArt, time: time)
+        let strip: CGRect? = backing.z > backing.x
+            ? CGRect(x: Double(backing.x) - 0.04, y: Double(backing.y) - 0.04,
+                     width: Double(backing.z - backing.x) + 0.08, height: Double(backing.w - backing.y) + 0.08)
+            : nil
         return { p in
             for camera in cameras {
                 guard let q = CameraPose.apply(camera, p).map({ $0 + SIMD2(aspect / 2, 0.5) }),
                       q.x > margin, q.x < aspect - margin, q.y > margin, q.y < 1 - margin else { return false }
                 if covers.contains(where: { $0.contains(q, aspect: aspect, padding: 0.035) }) { return false }
                 if let caption, caption.contains(CGPoint(x: q.x, y: q.y)) { return false }
+                if let strip, strip.contains(CGPoint(x: q.x, y: q.y)) { return false }
             }
             return true
         }
@@ -467,17 +497,17 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     private func updatePrintedText(_ input: VisualInput, time: Double, layout: FoldLayout, hasArt: Bool, sceneHeight: Int) {
         // Caption: a new track's caption soaks in, holds, soaks out.
         if let caption = input.caption, caption.id != captionSlot?.captionID {
-            let fontSize = CGFloat(sceneHeight) * 0.06 * 2
-            let room = 0.8
+            let fontSize = CGFloat(sceneHeight) * 0.042 * 2
+            let room = 0.7
             if let image = LyricRasterizer.caption(title: currentStyle.apply(case: caption.title), subtitle: caption.subtitle,
                                                    font: currentStyle.font,
                                                    fontSize: fontSize, maxWidth: CGFloat(Double(sceneHeight) * room * 2)),
                let tex = texture(image) {
                 let size = SIMD2(Double(image.width), Double(image.height)) / (2 * Double(sceneHeight))
-                let corner = captionCorner(size: size, aspect: layout.aspect, hasArt: hasArt)
-                let onPaper = shot.targetCamera.world(of: corner, aspect: layout.aspect) ?? corner
+                let corner = stripCaptionCentre(size: size, hasArt: hasArt && coverInStrip)
+                // Light words on the strip's dark backing.
                 captionSlot = PrintedSlot(id: 0, captionID: caption.id, texture: tex, size: size, spot: nil, enteredAt: time,
-                                          screenCentre: corner, tone: tone(at: onPaper, layout: layout))
+                                          screenCentre: corner, tone: 2)
             }
         } else if input.caption == nil, let caption = captionSlot, caption.exitedAt == nil {
             captionSlot?.exitedAt = time
@@ -557,31 +587,44 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     }
 
     private func captionOpacity(_ slot: PrintedSlot, time: Double) -> Double {
-        let out = slot.exitedAt ?? (slot.enteredAt + Self.captionHold)
+        // Stays up for the whole track (the now-playing strip).
+        let out = slot.exitedAt ?? .infinity
         return ease((time - slot.enteredAt) / Self.inkIn) * (1 - ease((time - out) / Self.inkOut))
     }
 
-    /// Printed like a title card in a corner of the screen, the first one the cover (where the
-    /// shot is taking it) leaves clear.
-    private func captionCorner(size: SIMD2<Double>, aspect: Double, hasArt: Bool) -> SIMD2<Double> {
-        let left = 0.06 + size.x / 2, right = aspect - 0.06 - size.x / 2
-        let top = 0.06 + size.y / 2, bottom = 0.95 - size.y / 2
-        let corners = [SIMD2(left, top), SIMD2(left, bottom), SIMD2(right, bottom), SIMD2(right, top)]
-        let covers = hasArt ? [shot.targetCover] : []
-        return corners.first { c in
-            !covers.contains { cover in
-                (0...4).contains { i in
-                    (0...2).contains { j in
-                        cover.contains(c + SIMD2(size.x * (Double(i) / 4 - 0.5), size.y * (Double(j) / 2 - 0.5)),
-                                       aspect: aspect, padding: 0.02)
-                    }
-                }
-            }
-        } ?? corners[0]
+    /// The backing behind the strip (cover and words), while there's something in it.
+    private func stripBacking(aspect: Double, hasArt: Bool, time: Double) -> SIMD4<Float> {
+        let pad = 0.018
+        var lo = SIMD2(Double.infinity, .infinity), hi = SIMD2(-Double.infinity, -.infinity)
+        if hasArt {
+            let c = SIMD2(shot.cover.x * aspect, shot.cover.y), h = shot.cover.size / 2
+            lo = simd_min(lo, c - h)
+            hi = simd_max(hi, c + h)
+        }
+        if let caption = captionSlot, captionOpacity(caption, time: time) > 0.01 {
+            let f = captionFrame(caption, aspect: aspect)
+            lo = simd_min(lo, f.centre - f.size / 2)
+            hi = simd_max(hi, f.centre + f.size / 2)
+        }
+        guard lo.x < hi.x else { return .zero }
+        return SIMD4(Float(lo.x - pad), Float(lo.y - pad), Float(hi.x + pad * 1.6), Float(hi.y + pad))
     }
 
+    /// The title and artist sit beside the strip's cover, centred on it (or in its place
+    /// when the cover is hidden).
+    private func stripCaptionCentre(size: SIMD2<Double>, hasArt: Bool) -> SIMD2<Double> {
+        let left = Self.stripMargin + (hasArt ? Self.stripCoverSize + Self.stripGap : 0)
+        let centreY = 1 - Self.stripMargin - (hasArt ? Self.stripCoverSize / 2 : size.y / 2)
+        return SIMD2(left + size.x / 2, centreY)
+    }
+
+    /// Beside the strip's cover whenever it's showing — worked out each frame, since the title
+    /// often arrives before the artwork does.
     private func captionFrame(_ slot: PrintedSlot, aspect: Double) -> (centre: SIMD2<Double>, size: SIMD2<Double>) {
-        (slot.screenCentre ?? SIMD2(0.06 + slot.size.x / 2, 0.06 + slot.size.y / 2), slot.size)
+        if coverInStrip {
+            return (stripCaptionCentre(size: slot.size, hasArt: slots.first?.art != nil && showCover), slot.size)
+        }
+        return (slot.screenCentre ?? SIMD2(0.06 + slot.size.x / 2, 0.06 + slot.size.y / 2), slot.size)
     }
 
     private func setInk(_ uniforms: inout SceneUniforms, time: Double, layout: FoldLayout) {
@@ -681,6 +724,8 @@ struct SceneUniforms {
     var palette1 = SceneUniforms.emptyPalette
     /// World-from-screen homography rows (see `CameraPose.worldFromScreen`).
     var camera: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0))
+
+    var strip = SIMD4<Float>()
 
     mutating func setCamera(_ m: simd_double3x3) {
         let r = m.transpose
