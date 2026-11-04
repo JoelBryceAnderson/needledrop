@@ -7,7 +7,7 @@ let package = Package(
     products: [
         .library(
             name: "NeedledropKit",
-            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness"]
+            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals"]
         ),
         .executable(name: "needledrop-replay", targets: ["needledrop-replay"]),
     ],
@@ -22,16 +22,19 @@ let package = Package(
         .target(name: "Metadata", dependencies: ["Recognition"]),
         // Side detector + session state machine (idle → … → playing(track) → … → sideEnded).
         .target(name: "SessionState", dependencies: ["SignalAnalysis", "Recognition"]),
+        // Metal renderer, palettes, scene transitions. Shaders compile at runtime from source.
+        .target(name: "Visuals", dependencies: ["SignalAnalysis"]),
         // Wires capture → analysis → session → recognition → metadata, live or offline.
         .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState"]),
         // Feed recorded/synthetic audio through the pipeline as if it were live.
         .target(name: "ReplayHarness", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "SessionState", "Pipeline"]),
-        .executableTarget(name: "needledrop-replay", dependencies: ["ReplayHarness", "Pipeline", "AudioCapture"]),
+        .executableTarget(name: "needledrop-replay", dependencies: ["ReplayHarness", "Pipeline", "AudioCapture", "Visuals"]),
 
         .testTarget(name: "AudioCaptureTests", dependencies: ["AudioCapture"]),
         .testTarget(name: "SignalAnalysisTests", dependencies: ["SignalAnalysis", "ReplayHarness"]),
         .testTarget(name: "SessionStateTests", dependencies: ["SessionState", "SignalAnalysis", "Recognition"]),
         .testTarget(name: "RecognitionTests", dependencies: ["Recognition"]),
+        .testTarget(name: "VisualsTests", dependencies: ["Visuals", "SignalAnalysis"]),
         .testTarget(name: "MetadataTests", dependencies: ["Metadata", "Recognition"]),
         .testTarget(name: "PipelineTests", dependencies: ["Pipeline", "ReplayHarness", "SessionState", "AudioCapture", "Recognition", "Metadata"]),
     ]

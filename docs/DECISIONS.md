@@ -58,6 +58,38 @@ prefers exact title and artist and the original album over compilations. Album n
 stripped of "(Remastered)"/"(Deluxe)" suffixes. Artwork is the 1200×1200 rendition, cached per
 album, and all metadata is cached on disk, so a familiar record never hits the network.
 
+## Made in Milestone 3
+
+**Render at 480 lines, scale up bilinearly.** The scene goes to an `rgba16Float` texture
+480 px tall, with its width following the display's aspect. A second pass upscales it to
+the drawable. This answers the "crisp at composite" open question: designing at the
+resolution that actually reaches the TV keeps detail honest, and the upscale is naturally
+soft. `internalHeight` is a property, so an HDMI TV could use native resolution later.
+
+**Shaders compile from source at runtime** (`makeLibrary(source:)`), the same path
+Claude-generated shaders will take in M6. The renderer test compiles them, renders frames
+offscreen and checks the output isn't black, white or flat. That's the beginning of the M6
+shader validator.
+
+**Living cover uses Vision's foreground-instance mask, not a depth model.** It runs offline
+and ships with the OS. It produces two layers (subject and background), and the bass
+pushes them apart. Covers with no clear subject (typography, abstract art) get no mask and
+drift as a whole. A Core ML depth model (Depth Anything) is still the upgrade path if
+two-layer parallax looks too flat on real covers.
+
+**Palette gradients run in lightness order and sweep back and forth.** In dominance order,
+adjacent palette entries can be cream and black, which drew thin dark veins: exactly the
+fine detail composite turns to mush.
+
+**Audio drive is auto-gained per band.** Each band is scaled against its own decaying peak
+(24 dB range, 6 dB/s release), and anything under −60 dB is zero. Quiet records move the
+picture as much as loud ones, and groove noise between tracks stays dark.
+
+**Transitions run on wall-clock time; looks are per album.** Tracks from the same album
+don't crossfade. A new album crossfades over 3 s. The picture holds for 20 s after the
+music stops (a flip, a lift), then fades out over 4 s. Text (the lower-third caption) is a
+SwiftUI overlay for now. Lyrics in M4 will move text into Metal, as recommended below.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

@@ -22,14 +22,7 @@ struct DebugOverlayView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
             }
         }
-        .background(Color.black)
-        .focusable()
-        .focusEffectDisabled()
-        .onKeyPress(.escape) {
-            guard model.settings.fullScreen else { return .ignored }
-            model.toggleFullScreen()
-            return .handled
-        }
+        .background(Color.black.opacity(0.6))
     }
 }
 
