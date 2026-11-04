@@ -9,6 +9,7 @@ import ReplayHarness
 import ServiceManagement
 import SessionState
 import SwiftUI
+import Visuals
 
 struct LogEntry: Identifiable {
     let id = UUID()
@@ -20,8 +21,15 @@ struct LogEntry: Identifiable {
 @Observable
 final class AppModel {
     var settings: AppSettings {
-        didSet { settings.save() }
+        didSet {
+            settings.save()
+            renderer?.mode = settings.visualMode
+        }
     }
+    /// Nil only if Metal is unavailable; the stage then stays black.
+    let renderer: VisualsRenderer?
+    /// When the current track's caption should start showing.
+    private(set) var nowPlayingSince: Date?
     private(set) var engine: Engine
     var pipeline: ListeningPipeline { engine.pipeline }
     /// Current track's metadata and artwork, for the now-playing panel.
@@ -39,6 +47,24 @@ final class AppModel {
         let settings = AppSettings.load()
         self.settings = settings
         engine = Engine(detector: settings.detector, recognizer: ShazamRecognizer(), metadata: nil)
+        do {
+            renderer = try VisualsRenderer()
+        } catch {
+            renderer = nil
+            log.append(LogEntry(text: "Visuals unavailable: \(error)"))
+        }
+        renderer?.mode = settings.visualMode
+        renderer?.inputProvider = { [weak self] in self?.visualInput() ?? VisualInput() }
+    }
+
+    private func visualInput() -> VisualInput {
+        let snapshot = pipeline.snapshot()
+        let phase = engine.session().phase
+        return VisualInput(
+            features: snapshot.features,
+            beatAge: snapshot.lastBeatTime.map { snapshot.features.time - $0 },
+            active: phase != .idle && phase != .sideEnded
+        )
     }
 
     func launch() async {
@@ -124,7 +150,7 @@ final class AppModel {
 
     func presentVisuals() {
         presentation.present(
-            DebugOverlayView(model: self),
+            StageView(model: self),
             displayID: settings.displayID,
             displayName: settings.displayName,
             fullScreen: settings.fullScreen
@@ -168,17 +194,39 @@ final class AppModel {
         case .trackChanged(let track):
             metadata = nil
             artwork = nil
+            nowPlayingSince = nil
             if let track {
                 append("♫ \(track.artist) — \(track.title)")
             } else if engine.session().unidentified {
                 append("Couldn't identify this record")
+                renderer?.show(.neutral)
             }
+            // Between tracks the current look stays up; the next album crossfades in.
         case .metadata(let info, let data):
             metadata = info
             artwork = data.flatMap(NSImage.init(data:))
+            nowPlayingSince = Date()
+            updateLook(for: info)
         case .recognitionError(let message):
             append("✖ \(message)")
         }
+    }
+
+    private func updateLook(for info: TrackMetadata) {
+        guard let renderer, let image = artwork?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+        let id = info.collectionID ?? "\(info.artist)|\(info.album ?? info.title)"
+        guard renderer.currentLookID != id else { return }
+        Task { [weak self] in
+            let look = await AlbumLook.make(id: id, artwork: image)
+            // Only if it's still the album playing.
+            guard let self, let current = self.metadata,
+                  (current.collectionID ?? "\(current.artist)|\(current.album ?? current.title)") == id else { return }
+            self.renderer?.show(look)
+        }
+    }
+
+    func toggleDebugOverlay() {
+        settings.showDebugOverlay.toggle()
     }
 
     private func append(_ text: String) {

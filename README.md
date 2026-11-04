@@ -3,9 +3,10 @@
 Drop the needle and the TV comes alive. See the project brief for the full vision; this
 README covers how the code is laid out and how to work on it.
 
-**Status: Milestone 2 (Brain).** On top of M1's capture, analysis and side detection:
-ShazamKit recognition, a drift-corrected playback clock, a session state machine, iTunes
-metadata and artwork, and a now-playing debug screen.
+**Status: Milestone 3 (Eyes v1).** On top of M1's ears and M2's brain, the TV now shows a
+Metal scene: a palette-bleed field in the album's colours, and the cover itself as a "living
+cover" whose subject floats off its background with the bass. Albums crossfade into each
+other, and the picture fades to black when the turntable goes quiet.
 
 ## Layout
 
@@ -20,6 +21,7 @@ needledrop/
 │   │   ├── SignalAnalysis/  FFT, band energies, RMS/peak/clip, flatness, spectral flux, onsets, tempo + beat clock
 │   │   ├── Recognition/     ShazamKit + scripted recognizers, matching-window gate, playback clock
 │   │   ├── Metadata/        iTunes lookup/search, hi-res artwork, disk cache
+│   │   ├── Visuals/         Metal renderer (runtime-compiled MSL), palettes, audio drive, scene director
 │   │   ├── SessionState/    side detector + session machine (idle → listening → recognizing → playing ⇄ betweenTracks → sideEnded)
 │   │   ├── Pipeline/        AnalysisCore, ListeningPipeline (thread, snapshot, events), Engine (actor that runs it all)
 │   │   ├── ReplayHarness/   file replay source, offline runner, synthetic sides, track sidecars, side report
@@ -29,8 +31,8 @@ needledrop/
 └── docs/DECISIONS.md        design decisions and answers to the brief's open questions
 ```
 
-Later milestones add `Lyrics`, `ArtDirector`, `Visuals`, and `Archive` as further targets
-in the same package.
+Later milestones add `Lyrics`, `ArtDirector` and `Archive` as further targets in the same
+package.
 
 ### Data flow
 
@@ -61,7 +63,7 @@ Engine (actor): pipeline events + ticks ─▶ SessionMachine ─▶ open/close 
 ## Working on it
 
 ```bash
-make test                      # 54 tests: DSP, detector, session, clock, metadata, end-to-end replay
+make test                      # 68 tests: DSP, detector, session, clock, metadata, visuals, end-to-end replay
 make synth                     # writes Fixtures/synthetic-side.wav (3 tracks, known BPMs and gaps)
 make analyze                   # offline: sides, gaps, per-track tempo (~75× real time in debug)
 make analyze FILE=~/side-a.wav ARGS="--timeline out.csv"   # per-hop features to tune thresholds
@@ -69,6 +71,8 @@ make play                      # real-time through the live ring-buffer path
 make devices                   # list inputs + UIDs
 make listen ARGS="--device <uid>"   # live input, terminal meter (Terminal needs mic permission)
 make run                       # build and open the app
+swift run --package-path NeedledropKit needledrop-replay still out.png --art cover.jpg
+                               # render the visuals offscreen to a PNG (no display needed)
 ```
 
 In the app, **Settings › Input › Replay a Recording…** loops a file through the full live
@@ -76,7 +80,8 @@ path, so you can work on the visuals without the turntable running. If the file 
 `<name>.tracks.json` sidecar (`make synth` writes one), replay uses it instead of Shazam to
 say what's playing. That exercises the clock, metadata and artwork offline and without
 signing. Esc or ⌃⌘F toggles full
-screen. Pick the TV under **Settings › Visuals › Display**.
+screen. **D** toggles the debug overlay over the visuals. Pick the TV under **Settings ›
+Visuals › Display**.
 
 ### Tuning side detection with a real record
 

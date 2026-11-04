@@ -4,6 +4,10 @@ import Pipeline
 import ReplayHarness
 import SessionState
 import SignalAnalysis
+import ImageIO
+import Metal
+import UniformTypeIdentifiers
+import Visuals
 
 let usage = """
     needledrop-replay — run audio through the Needledrop pipeline without a turntable.
@@ -14,6 +18,8 @@ let usage = """
                                                    Real-time through the live ring-buffer path
       needledrop-replay synth <out.wav> [--sample-rate HZ] [--seed N]
                                                    Write a synthetic side with known ground truth
+      needledrop-replay still <out.png> [--art cover.jpg] [--seconds S] [--size WxH] [--palette-only]
+                                                   Render visuals offscreen with synthetic music
       needledrop-replay devices                    List audio input devices
       needledrop-replay listen [--device UID] [options]
                                                    Live input, prints events and a level meter
@@ -186,6 +192,51 @@ case "synth":
     })
     try script.write(for: url)
     print("wrote \(ReplayScript.sidecarURL(for: url).lastPathComponent) (scripted recognition for replay)")
+
+case "still":
+    let artPath = option("--art")
+    let seconds = option("--seconds").flatMap(Double.init) ?? 4
+    let size = (option("--size") ?? "1280x720").split(separator: "x").compactMap { Int($0) }
+    let paletteOnly = arguments.contains("--palette-only")
+    arguments.removeAll { $0 == "--palette-only" }
+    guard let path = arguments.first, size.count == 2 else { fail("still needs an output path (and --size WxH)") }
+
+    let renderer = try VisualsRenderer()
+    if paletteOnly { renderer.mode = .paletteBleed }
+    if let artPath {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: artPath) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail("can't read \(artPath)") }
+        let look = await AlbumLook.make(id: "still", artwork: image)
+        print("palette: " + look.palette.colors.map { String(format: "#%02X%02X%02X", Int($0.r * 255), Int($0.g * 255), Int($0.b * 255)) }.joined(separator: " "))
+        print("subject mask: \(look.subjectMask == nil ? "none" : "yes")")
+        renderer.show(look, at: 0)
+    }
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: size[0], height: size[1], mipmapped: false)
+    descriptor.usage = [.renderTarget, .shaderRead]
+    descriptor.storageMode = .shared
+    let target = renderer.device.makeTexture(descriptor: descriptor)!
+    let queue = renderer.device.makeCommandQueue()!
+    // Synthetic 120 BPM music: kick-driven bass, steady mids.
+    for frame in 0..<Int(seconds * 60) {
+        let t = Double(frame) / 60
+        let beatAge = t.truncatingRemainder(dividingBy: 0.5)
+        let kick = Float(exp(-beatAge / 0.12))
+        let features = AudioFeatures(bands: BandEnergies(sub: 0.02 + 0.2 * kick, bass: 0.03 + 0.25 * kick, mids: 0.08, highs: 0.015),
+                                     musicBandRMS: 0.1)
+        let buffer = queue.makeCommandBuffer()!
+        renderer.render(to: target, input: VisualInput(features: features, beatAge: beatAge, active: true), time: t, commandBuffer: buffer)
+        buffer.commit()
+        await buffer.completed()
+    }
+    var pixels = [UInt8](repeating: 0, count: size[0] * size[1] * 4)
+    target.getBytes(&pixels, bytesPerRow: size[0] * 4, from: MTLRegionMake2D(0, 0, size[0], size[1]), mipmapLevel: 0)
+    let context = CGContext(data: &pixels, width: size[0], height: size[1], bitsPerComponent: 8, bytesPerRow: size[0] * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+    let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil)!
+    CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+    guard CGImageDestinationFinalize(destination) else { fail("couldn't write \(path)") }
+    print("wrote \(path)")
 
 case "devices":
     let defaultUID = AudioDeviceCatalog.defaultInputDevice()?.uid

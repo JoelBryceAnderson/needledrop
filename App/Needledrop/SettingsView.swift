@@ -2,6 +2,7 @@ import AudioCapture
 import SessionState
 import SwiftUI
 import UniformTypeIdentifiers
+import Visuals
 
 struct SettingsView: View {
     @Bindable var model: AppModel
@@ -151,6 +152,12 @@ struct SettingsView: View {
                 get: { model.settings.fullScreen },
                 set: { _ in model.toggleFullScreen() }
             ))
+            Picker("Mode", selection: $model.settings.visualMode) {
+                Text("Auto (living cover)").tag(VisualMode.auto)
+                Text("Palette bleed only").tag(VisualMode.paletteBleed)
+            }
+            Toggle("Now-playing caption", isOn: $model.settings.showNowPlaying)
+            Toggle("Debug overlay", isOn: $model.settings.showDebugOverlay)
         }
     }
 }
