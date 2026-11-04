@@ -101,6 +101,8 @@ final class AppModel {
             input.sideProgress = min(1, max(0, (features.time - start) / Self.typicalSideLength))
         }
         input.rpm = rpm
+        // A new track is a new scene: the choreographer opens on an establishing shot.
+        input.trackID = metadata.map { "\($0.artist)|\($0.title)" }
         if session.phase == .sideEnded, sideIndex >= 0 {
             // The intermission card, printed like the caption.
             let side = Self.sideLetter(sideIndex), next = Self.sideLetter(sideIndex + 1)
@@ -500,6 +502,7 @@ final class AppModel {
         case .googie: .googie
         }
         renderer?.showCover = settings.showCover
+        renderer?.motion = settings.motion.amount
         renderer?.renderResolution = settings.renderResolution
         renderer?.coverModeOverride = switch settings.cover {
         case .auto: nil

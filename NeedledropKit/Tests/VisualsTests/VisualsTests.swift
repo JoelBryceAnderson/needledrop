@@ -174,7 +174,7 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
     )
 
     @Test func shadersCompileAndDrawAPicture() throws {
-        let renderer = try VisualsRenderer()
+        let renderer = try VisualsRenderer.still()
         let (mean, spread) = stats(render(renderer, input: playing))
         #expect(mean > 0.05, "frame is black (\(mean))")
         #expect(mean < 0.95, "frame is white (\(mean))")
@@ -182,7 +182,7 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
     }
 
     @Test func coverAppearsWithArtwork() throws {
-        let renderer = try VisualsRenderer()
+        let renderer = try VisualsRenderer.still()
         let art = bandedImage([(RGB(1, 0.9, 0.2), 1)])
         renderer.show(AlbumLook(id: "yellow", palette: .neutral, artwork: art), at: 0)
         let pixels = render(renderer, input: playing)
@@ -196,7 +196,7 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
         // Two identical scenes for a track with lyrics (cover moved to the left third), one
         // with a line showing: only the ink differs, in the open field, never on the cover.
         func frame(_ lyric: LyricFrame?) throws -> [UInt8] {
-            let renderer = try VisualsRenderer()
+            let renderer = try VisualsRenderer.still()
             renderer.show(AlbumLook(id: "blue", palette: Palette(colors: [RGB(0.2, 0.5, 0.75), RGB(0.1, 0.2, 0.35)]),
                                     artwork: bandedImage([(RGB(0.1, 0.1, 0.2), 1)])), at: 0)
             return render(renderer, input: VisualInput(features: playing.features, active: true, lyricsAvailable: true,
@@ -219,7 +219,7 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
     }
 
     @Test func staysBlackWhenNothingHasPlayed() throws {
-        let renderer = try VisualsRenderer()
+        let renderer = try VisualsRenderer.still()
         let (mean, _) = stats(render(renderer, input: VisualInput(active: false), frames: 30))
         #expect(mean < 0.3)  // fading in from black, never blown out
     }

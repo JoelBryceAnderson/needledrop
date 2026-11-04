@@ -265,6 +265,11 @@ struct SettingsView: View {
                 Text("Googie").tag(AppTheme.googie)
                 Text("Smoke").tag(AppTheme.smoke)
             }
+            Picker("Motion", selection: $model.settings.motion) {
+                Text("Directed (shots change with the music)").tag(MotionChoice.directed)
+                Text("Gentle").tag(MotionChoice.gentle)
+                Text("Still").tag(MotionChoice.still)
+            }
             Toggle("Album art  (A)", isOn: $model.settings.showCover)
             Picker("Cover", selection: $model.settings.cover) {
                 Text("Auto (art director chooses)").tag(CoverChoice.auto)

@@ -97,11 +97,23 @@ struct FoldLayout: Equatable {
     }
 
     /// Does the rotated text rectangle stay on screen, on one strip, and clear of `obstacles`?
+    /// `allowed`, when given, decides "on screen" point by point (the camera may be looking
+    /// at only part of the sheet) and can rule out more (the cover).
     func fits(_ spot: TextSpot, size: SIMD2<Double>, obstacles: [CGRect], oneStrip: Bool = true,
-              margin: Double = 0.035) -> Bool {
+              margin: Double = 0.035, allowed: ((SIMD2<Double>) -> Bool)? = nil) -> Bool {
         let (centre, angle) = frame(for: spot, size: size)
         let cs = Self.corners(centre: centre, angle: angle, size: size)
-        for p in cs where p.x < margin || p.x > aspect - margin || p.y < margin || p.y > 1 - margin { return false }
+        if let allowed {
+            let d = SIMD2(cos(angle), sin(angle)), n = SIMD2(-sin(angle), cos(angle))
+            for i in 0...12 {
+                for j in 0...2 {
+                    let p = centre + d * size.x * (Double(i) / 12 - 0.5) + n * size.y * (Double(j) / 2 - 0.5)
+                    if !allowed(p) { return false }
+                }
+            }
+        } else {
+            for p in cs where p.x < margin || p.x > aspect - margin || p.y < margin || p.y > 1 - margin { return false }
+        }
         // Entirely on one strip: no other crease runs through the words.
         if oneStrip {
             let strip = strip(at: centre)
@@ -129,7 +141,8 @@ struct FoldLayout: Equatable {
     /// A good spot for line number `index`: crease, side and position along it take turns
     /// (so lines move through the composition), sliding along the crease until the text
     /// fits. Nil if nothing fits at this size.
-    func spot(forLine index: Int, size: SIMD2<Double>, obstacles: [CGRect]) -> TextSpot? {
+    func spot(forLine index: Int, size: SIMD2<Double>, obstacles: [CGRect],
+              allowed: ((SIMD2<Double>) -> Bool)? = nil) -> TextSpot? {
         var candidates: [(crease: Int, side: Double)] = []
         for k in 0..<creases.count { candidates += [(k, -1), (k, 1)] }
         // Each line moves on: a different crease or side, and a different stretch along it.
@@ -143,7 +156,7 @@ struct FoldLayout: Equatable {
             for candidate in ranked {
                 for along in positions {
                     let spot = TextSpot(crease: candidate.crease, side: candidate.side, along: along)
-                    if fits(spot, size: size, obstacles: obstacles, oneStrip: oneStrip) { return spot }
+                    if fits(spot, size: size, obstacles: obstacles, oneStrip: oneStrip, allowed: allowed) { return spot }
                 }
             }
         }
