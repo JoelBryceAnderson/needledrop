@@ -284,6 +284,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
 
     public var currentLookID: String? { slots.first?.look.id }
     public var currentStyle: LookStyle { slots.first?.look.style ?? LookStyle() }
+    public var currentPalette: Palette { slots.first?.look.palette ?? .neutral }
 
     // MARK: - Custom (Claude-written) scene shaders
 

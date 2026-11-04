@@ -46,6 +46,7 @@ needledrop/
 │   │   ├── Archive/         side recorder, track splitter, ALAC/FLAC encoder + tags, GRDB library
 │   │   ├── Lyrics/          LRC parser, LRCLIB provider with disk cache
 │   │   ├── Visuals/         Metal renderer (runtime-compiled MSL), palettes, audio drive, scene director
+│   │   ├── Lights/          Philips Hue: discovery, link-button pairing, CLIP v2 REST, entertainment streaming (DTLS)
 │   │   ├── SessionState/    side detector + session machine (idle → listening → recognizing → playing ⇄ betweenTracks → sideEnded)
 │   │   ├── Pipeline/        AnalysisCore, ListeningPipeline (thread, snapshot, events), Engine (actor that runs it all)
 │   │   ├── ReplayHarness/   file replay source, offline runner, synthetic sides, track sidecars, side report

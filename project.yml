@@ -24,6 +24,9 @@ targets:
         LSApplicationCategoryType: public.app-category.music
         NSMicrophoneUsageDescription: Needledrop listens to your turntable to recognise records, drive the visuals and archive what you play.
         NSAppleEventsUsageDescription: Needledrop reads where you are in the song playing in Music, to time the lyrics.
+        NSLocalNetworkUsageDescription: Needledrop finds and controls your Philips Hue Bridge so your lights can follow the album colours and the beat.
+        NSBonjourServices:
+          - _hue._tcp
         NSAudioCaptureUsageDescription: Needledrop can listen to what this Mac is playing (a browser, a music app) to drive the visuals when the turntable isn't in use.
     entitlements:
       path: App/Needledrop/Needledrop.entitlements

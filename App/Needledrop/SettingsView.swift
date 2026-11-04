@@ -34,6 +34,10 @@ struct SettingsView: View {
                 .formStyle(.grouped)
                 .tabItem { Label("Archive", systemImage: "archivebox") }
 
+            Form { LightsSection(model: model) }
+                .formStyle(.grouped)
+                .tabItem { Label("Lights", systemImage: "lightbulb.led.wide") }
+
             Form {
                 Section("General") {
                     Toggle("Launch at login", isOn: Binding(

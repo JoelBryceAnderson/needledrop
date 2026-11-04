@@ -84,6 +84,7 @@ struct AppSettings: Codable, Equatable {
     /// Visuals and lyrics are delayed by this much.
     var outputLatency = 0.0
     var archive = ArchiveSettings()
+    var lights = LightsSettings()
 
     private static let key = "settings.v1"
 
@@ -114,6 +115,7 @@ struct AppSettings: Codable, Equatable {
         showLyrics = try c.decodeIfPresent(Bool.self, forKey: .showLyrics) ?? d.showLyrics
         outputLatency = try c.decodeIfPresent(Double.self, forKey: .outputLatency) ?? d.outputLatency
         archive = (try? c.decodeIfPresent(ArchiveSettings.self, forKey: .archive)) ?? d.archive
+        lights = (try? c.decodeIfPresent(LightsSettings.self, forKey: .lights)) ?? d.lights
     }
 
     static func load() -> AppSettings {
