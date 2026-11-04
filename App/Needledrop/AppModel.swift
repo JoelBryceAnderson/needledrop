@@ -99,7 +99,7 @@ final class AppModel {
                                          subtitle: [info.artist, info.album].compactMap { $0 }.joined(separator: "  ·  "))
         }
         if settings.showLyrics, let lyrics = session.lyrics, lyrics.isSynced, !lyrics.instrumental,
-           let clock = session.clock, clock.confidence(at: features.time) > 0.15 {
+           let clock = session.clock, session.identifiedByHand || clock.confidence(at: features.time) > 0.15 {
             input.lyricsAvailable = true
             let position = clock.position(at: features.time)
             if let cue = lyrics.cue(at: position) {
@@ -397,6 +397,20 @@ final class AppModel {
 
     private static func hex(_ c: RGB) -> String {
         String(format: "#%02X%02X%02X", Int(c.r * 255), Int(c.g * 255), Int(c.b * 255))
+    }
+
+    /// Names what's playing. Returns a problem to show, or nil on success.
+    func identify(artist: String, title: String, at text: String) async -> String? {
+        var position: Double?
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            let parts = trimmed.split(separator: ":").map { Double($0) }
+            guard !parts.contains(nil), (1...3).contains(parts.count) else { return "Couldn't read “\(trimmed)” — use 1:23 or 83" }
+            position = parts.compactMap { $0 }.reduce(0) { $0 * 60 + $1 }
+        }
+        let ok = await engine.identify(title: title.trimmingCharacters(in: .whitespaces),
+                                       artist: artist.trimmingCharacters(in: .whitespaces), position: position)
+        return ok ? nil : "Start the music first — Needledrop hasn't heard anything playing yet."
     }
 
     /// A fresh direction for the album playing (unless its look is pinned).
