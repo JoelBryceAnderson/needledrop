@@ -32,16 +32,13 @@ public struct VisualInput: Sendable {
     public var beatAge: Double?
     /// Music playing or about to: anything but idle / side ended.
     public var active: Bool
-    /// The current track has synced lyrics (the layout makes room for them).
-    public var lyricsAvailable: Bool
     public var lyric: LyricFrame?
 
     public init(features: AudioFeatures = AudioFeatures(), beatAge: Double? = nil, active: Bool = false,
-                lyricsAvailable: Bool = false, lyric: LyricFrame? = nil) {
+                lyric: LyricFrame? = nil) {
         self.features = features
         self.beatAge = beatAge
         self.active = active
-        self.lyricsAvailable = lyricsAvailable
         self.lyric = lyric
     }
 }
@@ -74,7 +71,6 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     private let queue: any MTLCommandQueue
     private let scenePipeline: any MTLRenderPipelineState
     private let presentPipeline: any MTLRenderPipelineState
-    private let textPipeline: any MTLRenderPipelineState
     private let loader: MTKTextureLoader
     private let placeholder: any MTLTexture
     private var sceneTexture: (any MTLTexture)?
@@ -102,14 +98,13 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         var texture: any MTLTexture
         /// Pixel size of the rasterised line (at 2× the internal resolution).
         var size: CGSize
+        var placement: Placement
         var enteredAt: Double
         var exitedAt: Double?
     }
 
     private var lyricSlots: [LyricSlot] = []
     private var textCache: [String: (texture: any MTLTexture, size: CGSize)] = [:]
-    private var lyricsPresence = 0.0
-    private var lyricBaseline = 0.86
 
     public init(device: (any MTLDevice)? = MTLCreateSystemDefaultDevice()) throws {
         guard let device, let queue = device.makeCommandQueue() else { throw VisualsError.noMetalDevice }
@@ -132,17 +127,6 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         }
         scenePipeline = try pipeline("scene_fragment", format: .rgba16Float)
         presentPipeline = try pipeline("present_fragment", format: .bgra8Unorm)
-
-        let text = MTLRenderPipelineDescriptor()
-        text.vertexFunction = library.makeFunction(name: "text_vertex")
-        text.fragmentFunction = library.makeFunction(name: "text_fragment")
-        text.colorAttachments[0].pixelFormat = .rgba16Float
-        text.colorAttachments[0].isBlendingEnabled = true
-        text.colorAttachments[0].sourceRGBBlendFactor = .one
-        text.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        text.colorAttachments[0].sourceAlphaBlendFactor = .one
-        text.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        textPipeline = try device.makeRenderPipelineState(descriptor: text)
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)
         placeholder = device.makeTexture(descriptor: descriptor)!
@@ -203,14 +187,14 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         let scene = sceneTarget(width: width, height: height)
 
         let current = slots.first
-        updateLyrics(input, time: time, dt: dt, sceneWidth: width, hasArt: current?.art != nil && showCover)
+        updateLyrics(input, time: time, sceneWidth: width, hasArt: current?.art != nil && showCover)
 
         var uniforms = SceneUniforms()
         uniforms.frame = SIMD4(Float(width), Float(height), Float(flow), frame.brightness)
         uniforms.audio = SIMD4(audio.bass, audio.mids, audio.highs, audio.level)
-        let presence = Float(lyricsPresence * lyricsPresence * (3 - 2 * lyricsPresence))
-        uniforms.rhythm = SIMD4(audio.beat, presence, slots.count > 1 ? frame.mix : 1, showCover ? 1 : 0)
+        uniforms.rhythm = SIMD4(audio.beat, 0, slots.count > 1 ? frame.mix : 1, showCover ? 1 : 0)
         uniforms.style = SIMD4(background == .paper ? 0 : 1, 0, 0, 0)
+        setInk(&uniforms, time: time, sceneWidth: width, sceneHeight: height)
         let previous = slots.count > 1 ? slots[1] : nil
         uniforms.slots = SIMD4(current?.art == nil ? 0 : 1, previous?.art == nil ? 0 : 1,
                                current?.mask == nil ? 0 : 1, previous?.mask == nil ? 0 : 1)
@@ -227,9 +211,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(current?.mask ?? placeholder, index: 1)
             encoder.setFragmentTexture(previous?.art ?? placeholder, index: 2)
             encoder.setFragmentTexture(previous?.mask ?? placeholder, index: 3)
+            encoder.setFragmentTexture(lyricSlots.last?.texture ?? placeholder, index: 4)
+            encoder.setFragmentTexture(lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2].texture : placeholder, index: 5)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-            drawLyrics(encoder, audio: audio, time: time, brightness: frame.brightness,
-                       palette: current?.look.palette ?? .neutral, sceneWidth: width, sceneHeight: height)
             encoder.endEncoding()
         }
 
@@ -245,69 +229,92 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    // MARK: - Lyrics
+    // MARK: - Lyrics (printed on the scene)
 
-    private func updateLyrics(_ input: VisualInput, time: Double, dt: Double, sceneWidth: Int, hasArt: Bool) {
-        // Layout eases between "lyrics" and "no lyrics" so nothing jumps.
-        let target = input.lyricsAvailable ? 1.0 : 0.0
-        lyricsPresence += (target - lyricsPresence) * (1 - exp(-dt / 0.6))
-        let baseline = hasArt ? 0.865 : 0.5
-        lyricBaseline += (baseline - lyricBaseline) * (1 - exp(-dt / 0.6))
-
-        if lyricSlots.last?.id != input.lyric?.id || (input.lyric == nil && lyricSlots.last?.exitedAt == nil) {
-            for i in lyricSlots.indices where lyricSlots[i].exitedAt == nil { lyricSlots[i].exitedAt = time }
-            if let lyric = input.lyric, let text = textTexture(lyric.text, sceneWidth: sceneWidth) {
-                lyricSlots.append(LyricSlot(id: lyric.id, texture: text.texture, size: text.size, enteredAt: time))
-            }
-        }
-        if let next = input.lyric?.next { _ = textTexture(next, sceneWidth: sceneWidth) }
-        lyricSlots.removeAll { slot in slot.exitedAt.map { time - $0 > Self.lyricExit } ?? false }
+    /// Where a line is printed: centre (fractions of width/height), how wide it may wrap
+    /// (fraction of width), and a slight tilt, as if set on the sheet.
+    private struct Placement {
+        var x: Double
+        var y: Double
+        var width: Double
+        var degrees: Double
+        var lines: Int
     }
 
-    private static let lyricEnter = 0.4
-    private static let lyricExit = 0.5
+    /// Around the cover: beside it, under it. Lines take turns so the words move through
+    /// the scene instead of sitting in one caption slot.
+    private static let besideCover: [Placement] = [
+        Placement(x: 0.165, y: 0.40, width: 0.27, degrees: -4, lines: 4),
+        Placement(x: 0.835, y: 0.60, width: 0.27, degrees: 3.5, lines: 4),
+        Placement(x: 0.50, y: 0.905, width: 0.74, degrees: -1.5, lines: 2),
+        Placement(x: 0.165, y: 0.66, width: 0.27, degrees: 2.5, lines: 4),
+        Placement(x: 0.835, y: 0.32, width: 0.27, degrees: -3, lines: 4),
+    ]
+    private static let openPaper: [Placement] = [
+        Placement(x: 0.34, y: 0.36, width: 0.55, degrees: -5, lines: 3),
+        Placement(x: 0.66, y: 0.63, width: 0.55, degrees: 4, lines: 3),
+        Placement(x: 0.50, y: 0.50, width: 0.78, degrees: -2, lines: 2),
+        Placement(x: 0.40, y: 0.70, width: 0.60, degrees: 3, lines: 3),
+    ]
 
-    private func drawLyrics(_ encoder: any MTLRenderCommandEncoder, audio: AudioDrive, time: Double, brightness: Float,
-                            palette: Palette, sceneWidth: Int, sceneHeight: Int) {
-        guard !lyricSlots.isEmpty else { return }
+    private static let inkIn = 0.7
+    private static let inkOut = 0.9
+
+    private func updateLyrics(_ input: VisualInput, time: Double, sceneWidth: Int, hasArt: Bool) {
+        if lyricSlots.last?.id != input.lyric?.id || (input.lyric == nil && lyricSlots.last?.exitedAt == nil) {
+            for i in lyricSlots.indices where lyricSlots[i].exitedAt == nil { lyricSlots[i].exitedAt = time }
+            if let lyric = input.lyric {
+                let placements = hasArt ? Self.besideCover : Self.openPaper
+                let placement = placements[abs(lyric.id) % placements.count]
+                if let text = textTexture(lyric.text, placement: placement, sceneWidth: sceneWidth) {
+                    lyricSlots.append(LyricSlot(id: lyric.id, texture: text.texture, size: text.size,
+                                                placement: placement, enteredAt: time))
+                }
+                if let next = lyric.next {
+                    _ = textTexture(next, placement: placements[abs(lyric.id + 1) % placements.count], sceneWidth: sceneWidth)
+                }
+            }
+        }
+        lyricSlots.removeAll { slot in slot.exitedAt.map { time - $0 > Self.inkOut } ?? false }
+        if lyricSlots.count > 2 { lyricSlots.removeFirst(lyricSlots.count - 2) }
+    }
+
+    /// Ink soaks in from soft to sharp, and soaks back out.
+    private func setInk(_ uniforms: inout SceneUniforms, time: Double, sceneWidth: Int, sceneHeight: Int) {
         func ease(_ x: Double) -> Double {
             let c = min(1, max(0, x))
             return c * c * (3 - 2 * c)
         }
-        let lightest = palette.colors.max { $0.luminance < $1.luminance } ?? RGB(1, 1, 1)
-        let color = SIMD4<Float>(0.8 + 0.2 * lightest.r, 0.8 + 0.2 * lightest.g, 0.8 + 0.2 * lightest.b, 1)
-        encoder.setRenderPipelineState(textPipeline)
-        for slot in lyricSlots {
-            let enter = ease((time - slot.enteredAt) / Self.lyricEnter)
-            let exit = slot.exitedAt.map { ease((time - $0) / Self.lyricExit) } ?? 0
-            let opacity = Float(enter * (1 - exit)) * brightness
-            guard opacity > 0.001 else { continue }
-            // Drift: rise in from below, float, drift up and away; swell with the music.
-            let y = lyricBaseline + (1 - enter) * 0.035 - exit * 0.05 + sin(flow * 1.3) * 0.004
-            let scale = 1 + 0.06 * Double(audio.level) + 0.03 * Double(audio.beat)
-            var uniforms = TextUniforms(
-                rect: SIMD4(0.5, Float(y),
-                            Float(slot.size.width / 2 / (2 * Double(sceneWidth)) * scale),
-                            Float(slot.size.height / 2 / (2 * Double(sceneHeight)) * scale)),
-                style: SIMD4(opacity, 0.2 + 0.35 * audio.level, 0, 0),
-                color: color
+        let aspect = Double(sceneWidth) / Double(sceneHeight)
+        func uniformsFor(_ slot: LyricSlot?) -> (SIMD4<Float>, SIMD4<Float>) {
+            guard let slot else { return (.zero, .zero) }
+            let reveal = ease((time - slot.enteredAt) / Self.inkIn)
+            let exit = slot.exitedAt.map { ease((time - $0) / Self.inkOut) } ?? 0
+            let p = slot.placement
+            let scale = 2.0 * Double(sceneHeight)  // rasterised at 2× the internal resolution
+            return (
+                SIMD4(Float(p.x * aspect), Float(p.y), Float(slot.size.width / 2 / scale), Float(slot.size.height / 2 / scale)),
+                SIMD4(Float(p.degrees * .pi / 180), Float(reveal * (1 - exit)), Float((1 - reveal) * 4.5 + exit * 3), 0)
             )
-            encoder.setVertexBytes(&uniforms, length: MemoryLayout<TextUniforms>.stride, index: 0)
-            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<TextUniforms>.stride, index: 0)
-            encoder.setFragmentTexture(slot.texture, index: 0)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
+        let newest = lyricSlots.last
+        let older = lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2] : nil
+        (uniforms.ink0a, uniforms.ink0b) = uniformsFor(newest)
+        (uniforms.ink1a, uniforms.ink1b) = uniformsFor(older)
     }
 
     /// Rasterised at twice the internal resolution, mipmapped (the shader blurs with mips).
-    private func textTexture(_ text: String, sceneWidth: Int) -> (texture: any MTLTexture, size: CGSize)? {
-        if let cached = textCache[text] { return cached }
-        let fontSize = CGFloat(internalHeight) * 0.075 * 2
-        guard let image = LyricRasterizer.image(for: text, fontSize: fontSize, maxWidth: CGFloat(sceneWidth) * 0.86 * 2),
+    private func textTexture(_ text: String, placement: Placement, sceneWidth: Int) -> (texture: any MTLTexture, size: CGSize)? {
+        let key = "\(placement.width)|\(text)"
+        if let cached = textCache[key] { return cached }
+        let fontSize = CGFloat(internalHeight) * (placement.width < 0.4 ? 0.068 : 0.085) * 2
+        guard let image = LyricRasterizer.image(for: text, fontSize: fontSize,
+                                                maxWidth: CGFloat(Double(sceneWidth) * placement.width) * 2,
+                                                maxLines: placement.lines),
               let texture = texture(image) else { return nil }
-        if textCache.count >= 8 { textCache.removeAll() }
+        if textCache.count >= 12 { textCache.removeAll() }
         let entry = (texture: texture, size: CGSize(width: image.width, height: image.height))
-        textCache[text] = entry
+        textCache[key] = entry
         return entry
     }
 
@@ -331,13 +338,6 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     }
 }
 
-/// Mirrors `TextUniforms` in `Shaders.source`.
-struct TextUniforms {
-    var rect: SIMD4<Float>
-    var style: SIMD4<Float>
-    var color: SIMD4<Float>
-}
-
 /// Mirrors `Uniforms` in `Shaders.source`.
 struct SceneUniforms {
     var frame = SIMD4<Float>()
@@ -345,6 +345,10 @@ struct SceneUniforms {
     var rhythm = SIMD4<Float>()
     var slots = SIMD4<Float>()
     var style = SIMD4<Float>()
+    var ink0a = SIMD4<Float>()
+    var ink0b = SIMD4<Float>()
+    var ink1a = SIMD4<Float>()
+    var ink1b = SIMD4<Float>()
     var palette0 = SceneUniforms.emptyPalette
     var palette1 = SceneUniforms.emptyPalette
 

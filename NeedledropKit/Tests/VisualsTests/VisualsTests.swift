@@ -192,18 +192,29 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
         #expect(r > 180 && g > 150 && b < 100, "centre is \(r),\(g),\(b)")
     }
 
-    @Test func lyricsAppearBelowTheCover() throws {
-        let renderer = try VisualsRenderer()
-        renderer.show(AlbumLook(id: "dark", palette: Palette(colors: [RGB(0.05, 0.05, 0.1)]),
-                                artwork: bandedImage([(RGB(0.1, 0.1, 0.2), 1)])), at: 0)
-        func bright(_ lyric: LyricFrame?) -> Int {
-            let pixels = render(renderer, input: VisualInput(features: playing.features, beatAge: nil, active: true,
-                                                             lyricsAvailable: true, lyric: lyric), frames: 120)
-            // Count near-white pixels in the lyric band (lower fifth).
-            return stride(from: 320 * 145 * 4, to: pixels.count, by: 4).filter { pixels[$0] > 200 && pixels[$0 + 1] > 200 }.count
+    @Test func lyricsArePrintedBesideTheCover() throws {
+        // Two identical scenes, one with a lyric: only the ink should differ, and only
+        // where line 0 is printed (left of the cover).
+        func frame(_ lyric: LyricFrame?) throws -> [UInt8] {
+            let renderer = try VisualsRenderer()
+            renderer.show(AlbumLook(id: "blue", palette: Palette(colors: [RGB(0.2, 0.5, 0.75), RGB(0.1, 0.2, 0.35)]),
+                                    artwork: bandedImage([(RGB(0.1, 0.1, 0.2), 1)])), at: 0)
+            return render(renderer, input: VisualInput(features: playing.features, active: true, lyric: lyric), frames: 90)
         }
-        #expect(bright(nil) < 20)
-        #expect(bright(LyricFrame(id: 1, text: "Thunder only happens when it's raining")) > 300)
+        let plain = try frame(nil)
+        let printed = try frame(LyricFrame(id: 0, text: "Thunder only happens when it's raining"))
+        func changed(x: Range<Int>, y: Range<Int>) -> Int {
+            var n = 0
+            for row in y {
+                for col in x {
+                    let i = (row * 320 + col) * 4
+                    if abs(Int(plain[i]) - Int(printed[i])) + abs(Int(plain[i + 1]) - Int(printed[i + 1])) > 40 { n += 1 }
+                }
+            }
+            return n
+        }
+        #expect(changed(x: 5..<100, y: 40..<110) > 300, "ink beside the cover")
+        #expect(changed(x: 110..<210, y: 30..<150) == 0, "nothing printed over the cover")
     }
 
     @Test func staysBlackWhenNothingHasPlayed() throws {

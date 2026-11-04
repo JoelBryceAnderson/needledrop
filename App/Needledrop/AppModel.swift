@@ -75,7 +75,6 @@ final class AppModel {
                                 active: session.phase != .idle && session.phase != .sideEnded)
         if settings.showLyrics, let lyrics = session.lyrics, lyrics.isSynced, !lyrics.instrumental,
            let clock = session.clock, clock.confidence(at: features.time) > 0.15 {
-            input.lyricsAvailable = true
             if let cue = lyrics.cue(at: clock.position(at: features.time)) {
                 input.lyric = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
             }

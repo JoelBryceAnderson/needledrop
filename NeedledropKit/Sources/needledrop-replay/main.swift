@@ -18,7 +18,7 @@ let usage = """
                                                    Real-time through the live ring-buffer path
       needledrop-replay synth <out.wav> [--sample-rate HZ] [--seed N]
                                                    Write a synthetic side with known ground truth
-      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text"] [--style paper|smoke] [--no-cover]
+      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text" [--lyric-slot N]] [--style paper|smoke] [--no-cover]
                                [--seconds S] [--size WxH]
                                                    Render visuals offscreen with synthetic music
       needledrop-replay devices                    List audio input devices
@@ -197,6 +197,7 @@ case "synth":
 case "still":
     let artPath = option("--art")
     let lyricText = option("--lyric")
+    let lyricID = option("--lyric-slot").flatMap(Int.init) ?? 0  // which placement to print it in
     let seconds = option("--seconds").flatMap(Double.init) ?? 4
     let size = (option("--size") ?? "1280x720").split(separator: "x").compactMap { Int($0) }
     let noCover = arguments.contains("--no-cover")
@@ -228,8 +229,8 @@ case "still":
         let features = AudioFeatures(bands: BandEnergies(sub: 0.02 + 0.2 * kick, bass: 0.03 + 0.25 * kick, mids: 0.08, highs: 0.015),
                                      musicBandRMS: 0.1)
         let buffer = queue.makeCommandBuffer()!
-        let input = VisualInput(features: features, beatAge: beatAge, active: true, lyricsAvailable: lyricText != nil,
-                                lyric: lyricText.map { LyricFrame(id: 0, text: $0) })
+        let input = VisualInput(features: features, beatAge: beatAge, active: true,
+                                lyric: lyricText.map { LyricFrame(id: lyricID, text: $0) })
         renderer.render(to: target, input: input, time: t, commandBuffer: buffer)
         buffer.commit()
         await buffer.completed()
