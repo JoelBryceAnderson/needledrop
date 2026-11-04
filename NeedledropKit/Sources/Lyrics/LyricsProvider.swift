@@ -62,24 +62,38 @@ public actor LyricsProvider {
         if let album = track.album { get.queryItems?.append(.init(name: "album_name", value: album)) }
         if let duration = track.duration { get.queryItems?.append(.init(name: "duration", value: String(Int(duration.rounded())))) }
 
+        // The exact match first. If it only has plain (untimed) lyrics, keep looking: another
+        // upload of the same song often has them synced. Plain is the last resort.
+        var plainOnly: Lyrics?
         do {
             let data = try await http.get(get.url!, headers: userAgent)
-            return try JSONDecoder().decode(Record.self, from: data).lyrics
+            let record = try JSONDecoder().decode(Record.self, from: data)
+            if record.syncedLyrics != nil || record.instrumental == true { return record.lyrics }
+            plainOnly = record.lyrics
         } catch HTTPError.status(404) {
             // Fall through to search.
         }
 
-        var search = URLComponents(url: base.appendingPathComponent("search"), resolvingAgainstBaseURL: false)!
-        search.queryItems = [
-            .init(name: "artist_name", value: track.artist),
-            .init(name: "track_name", value: track.title),
-        ]
-        let records = try JSONDecoder().decode([Record].self, from: try await http.get(search.url!, headers: userAgent))
-        let candidates = records.filter { record in
-            // Same artist (either way round, for "feat." credits), and close in length.
-            if let got = record.artistName, !got.isEmpty, MetadataResolver.artistMatch(track.artist, got) == 0 { return false }
-            guard let wanted = track.duration, let got = record.duration else { return true }
-            return abs(wanted - got) <= 5
+        func search(title: String) async throws -> [Record] {
+            var search = URLComponents(url: base.appendingPathComponent("search"), resolvingAgainstBaseURL: false)!
+            search.queryItems = [
+                .init(name: "artist_name", value: track.artist),
+                .init(name: "track_name", value: title),
+            ]
+            let records = try JSONDecoder().decode([Record].self, from: try await http.get(search.url!, headers: userAgent))
+            return records.filter { record in
+                // The same artist (in any order or styling), and close in length.
+                if let got = record.artistName, !got.isEmpty, MetadataResolver.artistMatch(track.artist, got) == 0 { return false }
+                guard let wanted = track.duration, let got = record.duration else { return true }
+                return abs(wanted - got) <= 5
+            }
+        }
+        var candidates = try await search(title: track.title)
+        // Catalogue titles carry extras LRCLIB often doesn't ("(feat. …)", "[Extended Version]").
+        let bare = track.title.replacingOccurrences(of: #"\s*[\(\[][^\)\]]*[\)\]]"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if !candidates.contains(where: { $0.syncedLyrics != nil }), !bare.isEmpty, bare != track.title {
+            candidates += (try? await search(title: bare)) ?? []
         }
         let best = candidates.min { a, b in
             let aSynced = a.syncedLyrics != nil, bSynced = b.syncedLyrics != nil
@@ -87,7 +101,8 @@ public actor LyricsProvider {
             let wanted = track.duration ?? 0
             return abs((a.duration ?? 0) - wanted) < abs((b.duration ?? 0) - wanted)
         }
-        return best?.lyrics
+        if let best, best.syncedLyrics != nil || plainOnly == nil { return best.lyrics }
+        return plainOnly ?? best?.lyrics
     }
 
     private var userAgent: [String: String] { ["User-Agent": needledropUserAgent] }
@@ -123,6 +138,7 @@ public actor LyricsProvider {
     }
 
     private static func key(_ t: TrackMetadata) -> String {
-        "\(t.artist.lowercased())|\(t.title.lowercased())|\(t.album?.lowercased() ?? "")|\(Int(t.duration ?? 0))"
+        // v2: v1 could keep an exact match's plain lyrics when synced ones existed elsewhere.
+        "v2|\(t.artist.lowercased())|\(t.title.lowercased())|\(t.album?.lowercased() ?? "")|\(Int(t.duration ?? 0))"
     }
 }
