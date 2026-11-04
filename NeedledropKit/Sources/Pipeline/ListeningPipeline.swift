@@ -48,8 +48,8 @@ public final class ListeningPipeline: @unchecked Sendable {
     public static let tickInterval = 0.25
 
     public let events: AsyncStream<PipelineEvent>
-    /// Receives every analysed hop on the analysis thread (recognition, archive).
-    public let observer: (any AudioObserver)?
+    /// Receive every analysed hop on the analysis thread (recognition, archive).
+    public let observers: [any AudioObserver]
 
     private let ring = AudioRingBuffer(channelCount: 2, minimumCapacity: 1 << 20)  // ~21 s at 48 kHz
     private let continuation: AsyncStream<PipelineEvent>.Continuation
@@ -69,9 +69,9 @@ public final class ListeningPipeline: @unchecked Sendable {
     private var historyAccumulator = 0.0
     private var nextTick = 0.0
 
-    public init(config: SideDetectorConfig = SideDetectorConfig(), observer: (any AudioObserver)? = nil) {
+    public init(config: SideDetectorConfig = SideDetectorConfig(), observers: [any AudioObserver] = []) {
         self.config = config
-        self.observer = observer
+        self.observers = observers
         var initial = PipelineSnapshot()
         initial.config = config
         working = initial
@@ -175,8 +175,10 @@ public final class ListeningPipeline: @unchecked Sendable {
                 continue
             }
             let (features, sideEvents) = core.process(left: buffer, right: buffer + hop)
-            observer?.observe(left: buffer, right: buffer + hop, frameCount: hop,
-                              endTime: features.time, sampleRate: core.parameters.sampleRate)
+            for observer in observers {
+                observer.observe(left: buffer, right: buffer + hop, frameCount: hop,
+                                 endTime: features.time, sampleRate: core.parameters.sampleRate)
+            }
             publish(features, sideEvents, core: core)
         }
     }

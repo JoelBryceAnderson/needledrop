@@ -1,3 +1,4 @@
+import Archive
 import AudioCapture
 import SessionState
 import SwiftUI
@@ -12,6 +13,7 @@ struct SettingsView: View {
             inputSection
             detectionSection
             displaySection
+            archiveSection
             Section("General") {
                 Toggle("Launch at login", isOn: Binding(
                     get: { model.launchesAtLogin },
@@ -129,6 +131,50 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    // MARK: - Archive
+
+    private var archiveSection: some View {
+        Section {
+            Toggle("Record every side", isOn: $model.settings.archive.enabled)
+            Picker("Format", selection: $model.settings.archive.format) {
+                Text("Apple Lossless (.m4a)").tag(ArchiveFormat.alac)
+                Text("FLAC").tag(ArchiveFormat.flac)
+            }
+            HStack {
+                Text("Location")
+                Spacer()
+                Text(model.settings.archive.root.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Button("Choose…", action: chooseArchiveFolder)
+                Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([model.settings.archive.root]) }
+            }
+            Picker("Repeat plays", selection: $model.settings.archive.dedup) {
+                Text("Keep only the best recording").tag(DedupPolicy.keepBest)
+                Text("Keep every recording").tag(DedupPolicy.keepAll)
+            }
+            Toggle("Also keep the raw side file", isOn: $model.settings.archive.keepRawSides)
+        } header: {
+            Text("Archive")
+        } footer: {
+            Text("Each side is split into tracks at the gaps (and at Shazam's track changes), tagged, and saved losslessly at the interface's sample rate. \"Best\" means no clipping, then the highest level.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func chooseArchiveFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = model.settings.archive.root
+        panel.message = "Choose where archived records are saved (an external drive or NAS works)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.settings.archive.rootPath = url.path
     }
 
     // MARK: - Display

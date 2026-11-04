@@ -7,9 +7,13 @@ let package = Package(
     products: [
         .library(
             name: "NeedledropKit",
-            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics"]
+            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics", "Archive"]
         ),
         .executable(name: "needledrop-replay", targets: ["needledrop-replay"]),
+    ],
+    dependencies: [
+        // SQLite for the library (see docs/DECISIONS.md).
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
     ],
     targets: [
         // Device selection, engine lifecycle, lock-free ring buffer.
@@ -22,12 +26,17 @@ let package = Package(
         .target(name: "Metadata", dependencies: ["Recognition"]),
         // Time-synced lyrics from LRCLIB, LRC parsing.
         .target(name: "Lyrics", dependencies: ["Metadata"]),
+        // Side recording, track splitting, lossless encoding + tags, the library database.
+        .target(name: "Archive", dependencies: [
+            "AudioCapture", "Recognition", "Metadata",
+            .product(name: "GRDB", package: "GRDB.swift"),
+        ]),
         // Side detector + session state machine (idle → … → playing(track) → … → sideEnded).
         .target(name: "SessionState", dependencies: ["SignalAnalysis", "Recognition"]),
         // Metal renderer, palettes, scene transitions. Shaders compile at runtime from source.
         .target(name: "Visuals", dependencies: ["SignalAnalysis"]),
         // Wires capture → analysis → session → recognition → metadata, live or offline.
-        .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState"]),
+        .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Archive"]),
         // Feed recorded/synthetic audio through the pipeline as if it were live.
         .target(name: "ReplayHarness", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "SessionState", "Pipeline"]),
         .executableTarget(name: "needledrop-replay", dependencies: ["ReplayHarness", "Pipeline", "AudioCapture", "Visuals"]),
@@ -38,6 +47,7 @@ let package = Package(
         .testTarget(name: "RecognitionTests", dependencies: ["Recognition"]),
         .testTarget(name: "VisualsTests", dependencies: ["Visuals", "SignalAnalysis"]),
         .testTarget(name: "LyricsTests", dependencies: ["Lyrics", "Metadata"]),
+        .testTarget(name: "ArchiveTests", dependencies: ["Archive", "Recognition", "Metadata", "ReplayHarness"]),
         .testTarget(name: "MetadataTests", dependencies: ["Metadata", "Recognition"]),
         .testTarget(name: "PipelineTests", dependencies: ["Pipeline", "ReplayHarness", "SessionState", "AudioCapture", "Recognition", "Metadata"]),
     ]

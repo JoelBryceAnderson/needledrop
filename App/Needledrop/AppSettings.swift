@@ -1,3 +1,4 @@
+import Archive
 import Foundation
 import SessionState
 import Visuals
@@ -23,6 +24,7 @@ struct AppSettings: Codable, Equatable {
     /// Seconds the room hears the record after the Mac does (AirPlay to HomePods ≈ 2 s).
     /// Visuals and lyrics are delayed by this much.
     var outputLatency = 0.0
+    var archive = ArchiveSettings()
 
     private static let key = "settings.v1"
 
@@ -41,6 +43,7 @@ struct AppSettings: Codable, Equatable {
         showDebugOverlay = try c.decodeIfPresent(Bool.self, forKey: .showDebugOverlay) ?? d.showDebugOverlay
         showLyrics = try c.decodeIfPresent(Bool.self, forKey: .showLyrics) ?? d.showLyrics
         outputLatency = try c.decodeIfPresent(Double.self, forKey: .outputLatency) ?? d.outputLatency
+        archive = (try? c.decodeIfPresent(ArchiveSettings.self, forKey: .archive)) ?? d.archive
     }
 
     static func load() -> AppSettings {
