@@ -86,7 +86,7 @@ public final class ListeningPipeline: @unchecked Sendable {
     }
 
     /// Features `delay` seconds behind the newest (up to `FeatureHistory.maximumDelay`).
-    public func features(delayedBy delay: Double) -> (features: AudioFeatures, beatAge: Double?) {
+    public func features(delayedBy delay: Double) -> (features: AudioFeatures, beatAge: Double?, onsetAge: Double?) {
         history.withLock { $0.features(delayedBy: delay) }
     }
 

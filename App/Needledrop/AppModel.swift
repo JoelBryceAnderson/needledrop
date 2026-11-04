@@ -45,6 +45,11 @@ final class AppModel {
     private(set) var artDirectionStatus = "No album yet"
     private(set) var currentAlbumKey: String?
     private var tracksHeard: [String: [String]] = [:]
+    /// Sides this sitting (A, B, …); resets after a long break.
+    private var sideIndex = -1
+    private var lastSideEnded: Date?
+    /// When the turntable went quiet (for the library wall).
+    private(set) var idleSince: Date?
     private let styleStore = StyleStore(directory: MetadataResolver.defaultCacheDirectory.appendingPathComponent("styles"))
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
@@ -74,19 +79,44 @@ final class AppModel {
     /// Everything is read `outputLatency` behind the newest audio, so picture and words
     /// line up with what the room hears rather than what the Mac hears.
     private func visualInput() -> VisualInput {
-        let (features, beatAge) = pipeline.features(delayedBy: settings.outputLatency)
+        let (features, beatAge, onsetAge) = pipeline.features(delayedBy: settings.outputLatency)
         let session = engine.session()
         var input = VisualInput(features: features, beatAge: beatAge,
                                 active: session.phase != .idle && session.phase != .sideEnded)
-        if settings.showNowPlaying, let info = metadata {
+        input.onsetAge = onsetAge
+        input.sideEnded = session.phase == .sideEnded
+        if let start = session.sideStart {
+            input.sideProgress = min(1, max(0, (features.time - start) / Self.typicalSideLength))
+        }
+        input.rpm = rpm
+        if session.phase == .sideEnded, sideIndex >= 0 {
+            // The intermission card, printed like the caption.
+            let side = Self.sideLetter(sideIndex), next = Self.sideLetter(sideIndex + 1)
+            input.caption = CaptionFrame(id: "intermission-\(side)", title: "Side \(side) complete",
+                                         subtitle: "Flip for side \(next)")
+        } else if settings.showNowPlaying, let info = metadata {
             input.caption = CaptionFrame(id: "\(info.artist)|\(info.title)", title: info.title,
                                          subtitle: [info.artist, info.album].compactMap { $0 }.joined(separator: "  ·  "))
         }
         if settings.showLyrics, let lyrics = session.lyrics, lyrics.isSynced, !lyrics.instrumental,
            let clock = session.clock, clock.confidence(at: features.time) > 0.15 {
             input.lyricsAvailable = true
-            if let cue = lyrics.cue(at: clock.position(at: features.time)) {
-                input.lyric = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
+            let position = clock.position(at: features.time)
+            if let cue = lyrics.cue(at: position) {
+                var frame = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
+                if typewriter {
+                    // Words in time with the singing, snapped onto the beat grid where it's close.
+                    var beats: [Double] = []
+                    if let bpm = features.tempo, let beatAge {
+                        let beat = clock.position(at: features.time - beatAge)
+                        let period = 60 / bpm * clock.rate
+                        let k0 = ((cue.start - beat) / period).rounded(.down)
+                        beats = (0..<64).map { beat + (k0 + Double($0)) * period }.filter { $0 <= cue.end }
+                    }
+                    let starts = WordTiming.starts(for: cue.text, from: cue.start, to: cue.end, beats: beats)
+                    frame.revealedWords = WordTiming.revealed(at: position, starts: starts)
+                }
+                input.lyric = frame
             }
         }
         return input
@@ -218,8 +248,25 @@ final class AppModel {
         case .pipeline(.source(.waitingForDevice(let what))): append("Waiting for \(what)")
         case .pipeline(.source(.failed(let message))): append("✖ \(message)")
         case .pipeline(.source(.finished)): append("Replay finished")
-        case .pipeline(.side(let side)): if let text = Self.describe(side) { append(text) }
-        case .pipeline(.tick), .pipeline(.recognition): break
+        case .pipeline(.side(let side)):
+            if let text = Self.describe(side) { append(text) }
+            switch side {
+            case .sideStarted:
+                // A new sitting after a long break starts again at side A.
+                if let ended = lastSideEnded, Date().timeIntervalSince(ended) < 15 * 60 { sideIndex += 1 } else { sideIndex = 0 }
+            case .sideEnded:
+                lastSideEnded = Date()
+            default:
+                break
+            }
+        case .pipeline(.tick):
+            let phase = engine.session().phase
+            if phase == .idle || phase == .sideEnded {
+                if idleSince == nil { idleSince = Date() }
+            } else if idleSince != nil {
+                idleSince = nil
+            }
+        case .pipeline(.recognition): break
         case .trackChanged(let track):
             metadata = nil
             artwork = nil
@@ -259,6 +306,33 @@ final class AppModel {
 
     /// A new album gets its extracted-palette look at once, then (if the art director is
     /// on) crossfades to Claude's direction — one request per album, cached after that.
+    /// For the tonearm: a typical LP side.
+    static let typicalSideLength = 22.0 * 60
+
+    static func sideLetter(_ index: Int) -> String {
+        String(UnicodeScalar(UInt8(65 + index % 26)))
+    }
+
+    private var typewriter: Bool {
+        switch settings.lyricAnimation {
+        case .auto: renderer?.currentStyle.animation == .typewriter
+        case .ink: false
+        case .typewriter: true
+        }
+    }
+
+    /// 45 for singles and EPs (four tracks or fewer, or named so), else 33⅓.
+    private var rpm: Double {
+        switch settings.rpm {
+        case .rpm33: return 100.0 / 3
+        case .rpm45: return 45
+        case .auto:
+            let album = metadata?.album ?? ""
+            let short = (metadata?.trackCount ?? 99) <= 4 || album.hasSuffix("- Single") || album.hasSuffix("- EP")
+            return short ? 45 : 100.0 / 3
+        }
+    }
+
     private func updateLook(for info: TrackMetadata, reroll: Bool = false) {
         let key = Self.albumKey(info)
         tracksHeard[key, default: []].append(info.title)
@@ -346,6 +420,12 @@ final class AppModel {
         case .googie: .googie
         }
         renderer?.showCover = settings.showCover
+        renderer?.coverModeOverride = switch settings.cover {
+        case .auto: nil
+        case .living: .living
+        case .dissolve: .dissolve
+        case .record: .record
+        }
     }
 
     func toggleDebugOverlay() {

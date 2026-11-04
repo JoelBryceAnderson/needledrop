@@ -19,6 +19,7 @@ let usage = """
       needledrop-replay synth <out.wav> [--sample-rate HZ] [--seed N]
                                                    Write a synthetic side with known ground truth
       needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text" [--lyric-slot N]] [--caption "Title|Subtitle"] [--style paper|smoke|googie] [--shader body.metal] [--no-cover]
+                               [--cover living|dissolve|record] [--reveal WORDS] [--progress 0-1] [--side-ended]
                                [--seconds S] [--size WxH]
                                                    Render visuals offscreen with synthetic music
       needledrop-replay validate-shader <body.metal>
@@ -233,11 +234,17 @@ case "still":
     arguments.removeAll { $0 == "--no-cover" }
     let style = option("--style").flatMap(LookStyle.Background.init(rawValue:))
     let shaderBody = try option("--shader").map { try String(contentsOfFile: $0, encoding: .utf8) }
+    let coverMode = option("--cover").flatMap(LookStyle.CoverMode.init(rawValue:))
+    let reveal = option("--reveal").flatMap(Double.init)
+    let progress = option("--progress").flatMap(Double.init) ?? 0.3
+    let sideEnded = arguments.contains("--side-ended")
+    arguments.removeAll { $0 == "--side-ended" }
     guard let path = arguments.first, size.count == 2 else { fail("still needs an output path (and --size WxH)") }
 
     let renderer = try VisualsRenderer()
     renderer.showCover = !noCover
     renderer.themeOverride = style
+    renderer.coverModeOverride = coverMode
     if let artPath {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: artPath) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail("can't read \(artPath)") }
@@ -266,9 +273,12 @@ case "still":
         let features = AudioFeatures(bands: BandEnergies(sub: 0.02 + 0.2 * kick, bass: 0.03 + 0.25 * kick, mids: 0.08, highs: 0.015),
                                      musicBandRMS: 0.1)
         let buffer = queue.makeCommandBuffer()!
-        let input = VisualInput(features: features, beatAge: beatAge, active: true,
-                                lyric: lyricText.map { LyricFrame(id: lyricID, text: $0) },
+        var input = VisualInput(features: features, beatAge: beatAge, active: true,
+                                lyric: lyricText.map { LyricFrame(id: lyricID, text: $0, revealedWords: reveal) },
                                 caption: captionText.map { CaptionFrame(id: "still", title: $0[0], subtitle: $0.count > 1 ? $0[1] : "") })
+        input.onsetAge = beatAge  // a kick on every beat
+        input.sideProgress = progress
+        input.sideEnded = sideEnded && t > seconds - 3.5
         renderer.render(to: target, input: input, time: t, commandBuffer: buffer)
         buffer.commit()
         await buffer.completed()

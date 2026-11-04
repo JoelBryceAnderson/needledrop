@@ -10,22 +10,43 @@ struct SettingsView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        Form {
-            inputSection
-            detectionSection
-            displaySection
-            ArtDirectorSection(model: model)
-            archiveSection
-            Section("General") {
-                Toggle("Launch at login", isOn: Binding(
-                    get: { model.launchesAtLogin },
-                    set: { model.launchesAtLogin = $0 }
-                ))
+        TabView {
+            Form {
+                inputSection
+                detectionSection
             }
+            .formStyle(.grouped)
+            .tabItem { Label("Listening", systemImage: "waveform") }
+
+            Form {
+                displaySection
+                lookSection
+                lyricsSection
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("Visuals", systemImage: "sparkles.tv") }
+
+            Form { ArtDirectorSection(model: model) }
+                .formStyle(.grouped)
+                .tabItem { Label("Art Director", systemImage: "paintpalette") }
+
+            Form { archiveSection }
+                .formStyle(.grouped)
+                .tabItem { Label("Archive", systemImage: "archivebox") }
+
+            Form {
+                Section("General") {
+                    Toggle("Launch at login", isOn: Binding(
+                        get: { model.launchesAtLogin },
+                        set: { model.launchesAtLogin = $0 }
+                    ))
+                    Toggle("Debug overlay  (D)", isOn: $model.settings.showDebugOverlay)
+                }
+            }
+            .formStyle(.grouped)
+            .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .formStyle(.grouped)
-        .frame(width: 520)
-        .frame(minHeight: 640)
+        .frame(width: 560, height: 680)
         .onAppear { model.refreshDevices() }
     }
 
@@ -182,7 +203,7 @@ struct SettingsView: View {
     // MARK: - Display
 
     private var displaySection: some View {
-        Section("Visuals") {
+        Section("Display") {
             Picker("Display", selection: Binding(
                 get: {
                     PresentationController.screen(displayID: model.settings.displayID, displayName: model.settings.displayName).displayID ?? 0
@@ -200,6 +221,21 @@ struct SettingsView: View {
                 get: { model.settings.fullScreen },
                 set: { _ in model.toggleFullScreen() }
             ))
+            VStack(alignment: .leading, spacing: 4) {
+                SliderRow(title: "Output latency", value: $model.settings.outputLatency, range: 0...4, format: "%.2f s")
+                Text("How far the speakers lag the turntable. AirPlay to HomePods is usually about 2 s. Tune it until the beat dot and lyrics match what you hear.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Picker("When idle", selection: $model.settings.idleScreen) {
+                Text("Library wall").tag(IdleScreen.libraryWall)
+                Text("Black").tag(IdleScreen.black)
+            }
+        }
+    }
+
+    private var lookSection: some View {
+        Section {
             Picker("Theme", selection: $model.settings.theme) {
                 Text("Auto (art director chooses)").tag(AppTheme.auto)
                 Text("Paper").tag(AppTheme.paper)
@@ -207,15 +243,35 @@ struct SettingsView: View {
                 Text("Smoke").tag(AppTheme.smoke)
             }
             Toggle("Album art  (A)", isOn: $model.settings.showCover)
-            Toggle("Now-playing caption", isOn: $model.settings.showNowPlaying)
-            Toggle("Lyrics  (L)", isOn: $model.settings.showLyrics)
-            VStack(alignment: .leading, spacing: 4) {
-                SliderRow(title: "Output latency", value: $model.settings.outputLatency, range: 0...4, format: "%.2f s")
-                Text("How far the speakers lag the turntable. AirPlay to HomePods is usually about 2 s. Tune it until the beat dot and lyrics match what you hear.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Picker("Cover", selection: $model.settings.cover) {
+                Text("Auto (art director chooses)").tag(CoverChoice.auto)
+                Text("Living cover").tag(CoverChoice.living)
+                Text("Dissolve").tag(CoverChoice.dissolve)
+                Text("Virtual record").tag(CoverChoice.record)
             }
-            Toggle("Debug overlay", isOn: $model.settings.showDebugOverlay)
+            Picker("Record speed", selection: $model.settings.rpm) {
+                Text("Auto (45 for singles/EPs)").tag(RPMChoice.auto)
+                Text("33⅓").tag(RPMChoice.rpm33)
+                Text("45").tag(RPMChoice.rpm45)
+            }
+            Toggle("Now-playing caption", isOn: $model.settings.showNowPlaying)
+        } header: {
+            Text("Look")
+        } footer: {
+            Text("“Auto” follows each album's art direction (Claude's, when the art director is on).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var lyricsSection: some View {
+        Section("Lyrics") {
+            Toggle("Lyrics  (L)", isOn: $model.settings.showLyrics)
+            Picker("Animation", selection: $model.settings.lyricAnimation) {
+                Text("Auto (art director chooses)").tag(LyricAnimationChoice.auto)
+                Text("Ink: whole lines soak in").tag(LyricAnimationChoice.ink)
+                Text("Typewriter: word by word").tag(LyricAnimationChoice.typewriter)
+            }
         }
     }
 }

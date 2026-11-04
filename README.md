@@ -3,7 +3,14 @@
 Drop the needle and the TV comes alive. See the project brief for the full vision; this
 README covers how the code is laid out and how to work on it.
 
-**Status: Milestone 6 (Art director).** On a new album, Claude looks at the cover and sets
+**Status: Milestone 7 (Polish), the last milestone in the brief.**
+- **Typewriter lyrics:** words print one at a time, timed by syllables and nudged onto the beat.
+- **Cover modes:** the cover can dissolve into paper shards on transients, or become a virtual record (spinning at 33⅓ or 45, with a tonearm that tracks the side).
+- **Side end:** the picture winds down like a record slowing and prints "Side A complete — flip for side B".
+- **Idle:** the screen becomes a drifting wall of every album you've played.
+- **Settings:** now in tabs.
+
+Before that, **Milestone 6 (Art director)**: On a new album, Claude looks at the cover and sets
 the record's look: palette, background (paper folds, Googie, or its own shader), fold
 composition, motion and typography. Custom shaders are compiled and test-rendered in a
 sandbox before they're shown. One request per album, cached. Before that, **Milestone 5 (Memory)**: Every side is recorded (with pre-roll), split into

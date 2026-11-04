@@ -9,6 +9,12 @@ enum AppTheme: String, Codable, CaseIterable {
     case auto, paper, smoke, googie
 }
 
+/// Settings that force a choice the art director would otherwise make per album.
+enum CoverChoice: String, Codable, CaseIterable { case auto, living, dissolve, record }
+enum LyricAnimationChoice: String, Codable, CaseIterable { case auto, ink, typewriter }
+enum RPMChoice: String, Codable, CaseIterable { case auto, rpm33, rpm45 }
+enum IdleScreen: String, Codable, CaseIterable { case libraryWall, black }
+
 struct ArtDirectorSettings: Codable, Equatable {
     var enabled = true
     var model = ClaudeClient.defaultModel
@@ -29,6 +35,10 @@ struct AppSettings: Codable, Equatable {
     var displayName: String?
     var fullScreen = true
     var theme: AppTheme = .auto
+    var cover: CoverChoice = .auto
+    var lyricAnimation: LyricAnimationChoice = .auto
+    var rpm: RPMChoice = .auto
+    var idleScreen: IdleScreen = .libraryWall
     var artDirector = ArtDirectorSettings()
     var showCover = true
     var showNowPlaying = true
@@ -52,6 +62,10 @@ struct AppSettings: Codable, Equatable {
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         fullScreen = try c.decodeIfPresent(Bool.self, forKey: .fullScreen) ?? d.fullScreen
         theme = (try? c.decodeIfPresent(AppTheme.self, forKey: .theme)) ?? d.theme
+        cover = (try? c.decodeIfPresent(CoverChoice.self, forKey: .cover)) ?? d.cover
+        lyricAnimation = (try? c.decodeIfPresent(LyricAnimationChoice.self, forKey: .lyricAnimation)) ?? d.lyricAnimation
+        rpm = (try? c.decodeIfPresent(RPMChoice.self, forKey: .rpm)) ?? d.rpm
+        idleScreen = (try? c.decodeIfPresent(IdleScreen.self, forKey: .idleScreen)) ?? d.idleScreen
         artDirector = (try? c.decodeIfPresent(ArtDirectorSettings.self, forKey: .artDirector)) ?? d.artDirector
         showCover = try c.decodeIfPresent(Bool.self, forKey: .showCover) ?? d.showCover
         showNowPlaying = try c.decodeIfPresent(Bool.self, forKey: .showNowPlaying) ?? d.showNowPlaying

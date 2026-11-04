@@ -31,8 +31,11 @@ enum Shaders {
         float4 ink1b;
         float4 ink2a;   // the now-playing caption, printed the same way
         float4 ink2b;
+        float4 inkWords; // typewriter: words in slot 0, words shown in slot 0, same for slot 1
         float4 crease[4]; // normal.xy, offset (dot(q, normal) > offset = past it), active
         float4 fold;    // tilt (radians), accent strip, unused, unused
+        float4 cover;   // mode (0 living, 1 dissolve, 2 record), dissolve amount, record angle, side progress
+        float4 scene;   // wind-down (0…1), unused…
         float4 light;   // xyz
         float4 palette0[6];
         float4 palette1[6];
@@ -110,13 +113,20 @@ enum Shaders {
 
     // --- Lyrics as ink on the paper ---------------------------------------------
 
-    float inkLine(float2 q, float4 a, float4 b, texture2d<float> tex, sampler s) {
+    /// `words` > 0: only the first `shown` words print (the word index is in red).
+    float inkLine(float2 q, float4 a, float4 b, texture2d<float> tex, sampler s, float words, float shown) {
         if (b.y < 0.001) return 0.0;
         float2 d = q - a.xy;
         float c = cos(-b.x), sn = sin(-b.x);
         float2 local = float2(c * d.x - sn * d.y, sn * d.x + c * d.y);
         float2 t = local / (2.0 * a.zw) + 0.5;
-        return tex.sample(s, t, level(b.z)).a * b.y;
+        float4 texel = tex.sample(s, t, level(b.z));
+        float visible = 1.0;
+        if (words > 0.5) {
+            float index = texel.r / max(texel.a, 0.001) * words - 0.5;
+            visible = clamp(shown - index, 0.0, 1.0);
+        }
+        return texel.a * visible * b.y;
     }
 
     /// Ink coverage at scene uv: both lyric slots (one can soak out as the next soaks in)
@@ -125,9 +135,9 @@ enum Shaders {
                 texture2d<float> ink2) {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
         float2 q = float2(uv.x * u.frame.x / u.frame.y, uv.y);
-        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s);
-        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s);
-        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s);
+        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s, u.inkWords.x, u.inkWords.y);
+        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s, u.inkWords.z, u.inkWords.w);
+        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
         return 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
     }
 
@@ -138,9 +148,9 @@ enum Shaders {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
         float aspect = u.frame.x / u.frame.y;
         float2 q = float2(uv.x * aspect, uv.y);
-        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s);
-        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s);
-        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s);
+        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s, u.inkWords.x, u.inkWords.y);
+        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s, u.inkWords.z, u.inkWords.w);
+        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
         float2 c = a0 >= a1 && a0 >= a2 ? u.ink0a.xy : (a1 >= a2 ? u.ink1a.xy : u.ink2a.xy);
         return float2(c.x / aspect, c.y);
     }
@@ -308,6 +318,84 @@ enum Shaders {
         // Background recedes (darker) as bass pushes the layers apart.
         float3 col = mix(bg * (1.0 - hasMask * (0.12 + 0.15 * u.audio.x)), fg, m);
 
+        // Dissolve: the cover in triangular paper shards that fly out on transients. For each
+        // nearby shard, undo its offset and see whether this pixel lands inside it.
+        float shards = u.cover.y;
+        if (u.cover.x > 0.5 && u.cover.x < 1.5 && shards > 0.001) {
+            const float n = 7.0;
+            float2 cell = floor(c * n);
+            bool hit = false;
+            float3 shardColor = float3(0.0);
+            float2 shardUV = c;
+            for (int j = -2; j <= 2 && !hit; j++) {
+                for (int i = -2; i <= 2 && !hit; i++) {
+                    float2 g = cell + float2(i, j);
+                    if (any(g < 0.0) || any(g >= n)) continue;
+                    for (int t = 0; t < 2 && !hit; t++) {
+                        float2 h = float2(hash21(g * 1.7 + float(t) * 13.1), hash21(g * 2.3 + float(t) * 7.9));
+                        float2 offset = (normalize(h - 0.5 + 0.001) + (g + 0.5) / n - 0.5) * shards * (0.08 + 0.14 * h.x);
+                        float2 local = (c - offset) * n - g;   // shard's own cell coordinates
+                        bool inShard = t == 0 ? (local.x >= 0.0 && local.y >= 0.0 && local.x + local.y <= 1.0)
+                                              : (local.x <= 1.0 && local.y <= 1.0 && local.x + local.y >= 1.0);
+                        if (inShard) {
+                            hit = true;
+                            shardUV = c - offset;
+                            // Each shard catches the light a little differently, like folded paper.
+                            shardColor = art.sample(s, shardUV).rgb * (1.0 + (h.y - 0.5) * 0.35 * shards);
+                        }
+                    }
+                }
+            }
+            Cover o;
+            o.color = shardColor;
+            o.inside = hit ? 1.0 : 0.0;
+            o.shadow = 0.0;
+            return o;
+        }
+
+        // Virtual record: a flat LP spinning in the cover's place, the art as its label, and a
+        // tonearm moving inwards across the side.
+        if (u.cover.x > 1.5) {
+            float2 q = c - 0.5;
+            float r = length(q);
+            float angle = u.cover.z;
+            float3 vinyl = float3(0.055, 0.055, 0.065);
+            // Wide groove bands (fine grooves would vanish at 480 lines).
+            float bands = smoothstep(0.35, 0.65, 0.5 + 0.5 * sin(r * 70.0));
+            vinyl += 0.025 * bands * step(0.2, r);
+            vinyl += 0.05 * step(0.32, r) * step(r, 0.335);   // the gap between tracks
+            // The sheen stays put while the disc turns, which is what reads as spinning.
+            float a = atan2(q.y, q.x);
+            vinyl += 0.12 * pow(abs(cos(a - 0.8)), 24.0) * smoothstep(0.2, 0.25, r);
+            // The label: the cover, turning with the record.
+            float2 lq = rot2(q, angle) / 0.34 + 0.5;
+            float3 label = art.sample(s, lq).rgb;
+            float3 col = r < 0.17 ? label : vinyl;
+            col = mix(col, float3(0.02), 1.0 - smoothstep(0.009, 0.013, r));   // spindle hole
+            // Tonearm: pivot top-right, stylus on the record at a radius set by side progress.
+            float2 pivot = float2(0.47, -0.44);
+            float armLength = 0.72;
+            float sr = mix(0.46, 0.2, clamp(u.cover.w, 0.0, 1.0));
+            float dpc = length(pivot);
+            float along = (sr * sr - armLength * armLength + dpc * dpc) / (2.0 * dpc);
+            float across = sqrt(max(sr * sr - along * along, 0.0));
+            float2 axis = pivot / dpc;
+            float2 stylus = axis * along + float2(-axis.y, axis.x) * across;
+            float2 pa = q - pivot, ba = stylus - pivot;
+            float hseg = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+            float arm = length(pa - ba * hseg) - 0.012;
+            float head = length(q - stylus) - 0.028;
+            float weight = length(q - pivot) - 0.045;
+            float3 metal = mix(float3(0.82), u.palette0[5].rgb, 0.3);
+            float tonearm = min(min(arm, head), weight);
+            col = mix(col, metal, 1.0 - smoothstep(0.0, 0.006, tonearm));
+            Cover o;
+            o.color = col;
+            o.inside = max(1.0 - smoothstep(0.495, 0.5, r), 1.0 - smoothstep(0.0, 0.006, tonearm));
+            o.shadow = (1.0 - smoothstep(0.49, 0.56, length(c - float2(0.515, 0.53)))) * 0.55;
+            return o;
+        }
+
         // Rounded square with a soft shadow, in cover units.
         float2 d = abs(c - 0.5) - (0.5 - 0.035);
         float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - 0.035;
@@ -369,6 +457,10 @@ enum Shaders {
         }
         float2 v = in.uv - 0.5;
         col *= 1.0 - dot(v, v) * 0.7;
+        // Side over: the picture settles, losing some colour and light as it stops.
+        float wind = u.scene.x;
+        float grey = dot(col, float3(0.2126, 0.7152, 0.0722));
+        col = mix(col, float3(grey), wind * 0.55) * (1.0 - 0.25 * wind);
         col *= u.frame.w;
         return float4(col, 1.0);
     }

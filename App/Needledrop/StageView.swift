@@ -14,6 +14,19 @@ struct StageView: View {
             } else {
                 Color.black
             }
+            // After the scene has faded out (≈20 s + 4 s), the idle screen.
+            if model.settings.idleScreen == .libraryWall {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let idle = model.idleSince.map { context.date.timeIntervalSince($0) > 25 } ?? false
+                    ZStack {
+                        // Inserted fresh each time, so it shows the latest plays.
+                        if idle {
+                            LibraryWallView(library: model.library).transition(.opacity)
+                        }
+                    }
+                    .animation(.easeInOut(duration: 2.5), value: idle)
+                }
+            }
             if model.settings.showDebugOverlay {
                 DebugOverlayView(model: model)
             }

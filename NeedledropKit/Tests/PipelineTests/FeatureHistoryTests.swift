@@ -26,7 +26,7 @@ import Testing
 
     @Test func beatAgeIsMeasuredAtTheDelayedPoint() {
         let h = history(beatsEvery: 0.5)  // beats at 0.5, 1.0, … 5.0
-        let (f, age) = h.features(delayedBy: 1.2)  // t = 3.8 → last beat 3.5
+        let (f, age, _) = h.features(delayedBy: 1.2)  // t = 3.8 → last beat 3.5
         #expect(abs(f.time - 3.8) < 0.011)
         #expect(abs((age ?? -1) - 0.3) < 0.011)
     }

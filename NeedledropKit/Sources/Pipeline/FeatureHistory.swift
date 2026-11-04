@@ -21,24 +21,25 @@ public struct FeatureHistory: Sendable {
     }
 
     /// Features as of `delay` seconds before the newest hop, plus seconds since the last
-    /// beat at that point. Falls back to the oldest kept hop if history is shorter.
-    public func features(delayedBy delay: Double) -> (features: AudioFeatures, beatAge: Double?) {
-        guard count > 0 else { return (AudioFeatures(), nil) }
+    /// beat and the last onset at that point. Falls back to the oldest kept hop if history
+    /// is shorter.
+    public func features(delayedBy delay: Double) -> (features: AudioFeatures, beatAge: Double?, onsetAge: Double?) {
+        guard count > 0 else { return (AudioFeatures(), nil, nil) }
         let newest = entry(0)
         let target = newest.time - max(0, delay)
         var i = 0
         while i + 1 < count, entry(i).time > target { i += 1 }
         let found = entry(i)
         var beatAge: Double?
+        var onsetAge: Double?
         var j = i
-        while j < count, found.time - entry(j).time <= 2 {
-            if entry(j).beat {
-                beatAge = found.time - entry(j).time
-                break
-            }
+        while j < count, found.time - entry(j).time <= 2, beatAge == nil || onsetAge == nil {
+            let age = found.time - entry(j).time
+            if beatAge == nil, entry(j).beat { beatAge = age }
+            if onsetAge == nil, entry(j).onset { onsetAge = age }
             j += 1
         }
-        return (found, beatAge)
+        return (found, beatAge, onsetAge)
     }
 
     /// `back` hops before the newest.
