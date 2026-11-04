@@ -8,6 +8,18 @@ import ImageIO
 import Metal
 import UniformTypeIdentifiers
 import Visuals
+import Lyrics
+import ArtDirector
+
+/// An .lrc file as lyrics and as the visuals' timeline (as the app builds it).
+func loadLyrics(_ path: String) throws -> (Lyrics, LyricTimeline) {
+    let lyrics = Lyrics(lines: LRCParser.parse(try String(contentsOfFile: path, encoding: .utf8)))
+    let lines = lyrics.lines.indices.compactMap { i -> LyricTimeline.Line? in
+        guard !lyrics.lines[i].text.isEmpty, let cue = lyrics.cue(at: lyrics.lines[i].time), cue.index == i else { return nil }
+        return LyricTimeline.Line(index: i, start: cue.start, shownUntil: cue.shownUntil, heldUntil: cue.end, text: cue.text)
+    }
+    return (lyrics, LyricTimeline(lines: lines))
+}
 
 let usage = """
     needledrop-replay — run audio through the Needledrop pipeline without a turntable.
@@ -20,7 +32,11 @@ let usage = """
                                                    Write a synthetic side with known ground truth
       needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text" [--lyric-slot N]] [--caption "Title|Subtitle"] [--style paper|smoke|googie] [--shader body.metal] [--no-cover]
                                [--cover living|dissolve|record] [--reveal WORDS] [--progress 0-1] [--side-ended]
-                               [--seconds S] [--size WxH]
+                               [--seconds S] [--size WxH] [--motion 0…1] [--at t1,t2,…]
+                               (--lyric "a/b/c" cycles lines every 4 s; --at saves out-<t>.png at each time)
+                               [--lrc song.lrc [--score score.json]]  (real lyric timing, and a track score)
+      needledrop-replay score-check <song.lrc> <score.json>   Dry-run a track score against the lyrics
+      needledrop-replay score-prompt <song.lrc> [--artist A] [--title T]   What Claude is sent to score it
                                                    Render visuals offscreen with synthetic music
       needledrop-replay validate-shader <body.metal>
                                                    Run a custom-scene body through the art-director sandbox
@@ -237,6 +253,11 @@ case "still":
     let coverMode = option("--cover").flatMap(LookStyle.CoverMode.init(rawValue:))
     let reveal = option("--reveal").flatMap(Double.init)
     let progress = option("--progress").flatMap(Double.init) ?? 0.3
+    let motion = option("--motion").flatMap(Double.init)
+    let snapshots = option("--at")?.split(separator: ",").compactMap { Double($0) } ?? []
+    let lyricLines = lyricText?.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
+    let lrc = try option("--lrc").map(loadLyrics)
+    let score = try option("--score").map { try JSONDecoder().decode(TrackScore.self, from: Data(contentsOf: URL(fileURLWithPath: $0))) }
     let sideEnded = arguments.contains("--side-ended")
     arguments.removeAll { $0 == "--side-ended" }
     guard let path = arguments.first, size.count == 2 else { fail("still needs an output path (and --size WxH)") }
@@ -245,6 +266,7 @@ case "still":
     renderer.showCover = !noCover
     renderer.themeOverride = style
     renderer.coverModeOverride = coverMode
+    if let motion { renderer.motion = motion }
     if let artPath {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: artPath) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail("can't read \(artPath)") }
@@ -265,24 +287,62 @@ case "still":
     descriptor.storageMode = .shared
     let target = renderer.device.makeTexture(descriptor: descriptor)!
     let queue = renderer.device.makeCommandQueue()!
-    // Synthetic 120 BPM music: kick-driven bass, steady mids.
-    for frame in 0..<Int(seconds * 60) {
+    func write(_ path: String) {
+        var pixels = [UInt8](repeating: 0, count: size[0] * size[1] * 4)
+        target.getBytes(&pixels, bytesPerRow: size[0] * 4, from: MTLRegionMake2D(0, 0, size[0], size[1]), mipmapLevel: 0)
+        let context = CGContext(data: &pixels, width: size[0], height: size[1], bitsPerComponent: 8, bytesPerRow: size[0] * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
+        let destination = CGImageDestinationCreateWithURL(URL(fileURLWithPath: path) as CFURL, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        guard CGImageDestinationFinalize(destination) else { fail("couldn't write \(path)") }
+        print("wrote \(path)")
+    }
+    let end = max(seconds, (snapshots.max() ?? 0) + 1 / 60)
+    var pending = snapshots.sorted()
+    // Synthetic 120 BPM music: kick-driven bass, steady mids; with --at, a quiet verse and a
+    // loud chorus every 24 s so the choreography has sections to follow.
+    for frame in 0..<Int(end * 60) {
         let t = Double(frame) / 60
         let beatAge = t.truncatingRemainder(dividingBy: 0.5)
-        let kick = Float(exp(-beatAge / 0.12))
-        let features = AudioFeatures(bands: BandEnergies(sub: 0.02 + 0.2 * kick, bass: 0.03 + 0.25 * kick, mids: 0.08, highs: 0.015),
-                                     musicBandRMS: 0.1)
+        let loud: Float = snapshots.isEmpty || t.truncatingRemainder(dividingBy: 48) >= 24 ? 1 : 0.35
+        let kick = Float(exp(-beatAge / 0.12)) * loud
+        let features = AudioFeatures(bands: BandEnergies(sub: 0.02 + 0.2 * kick, bass: 0.03 + 0.25 * kick, mids: 0.08 * loud, highs: 0.015),
+                                     musicBandRMS: 0.1 * loud)
         let buffer = queue.makeCommandBuffer()!
         var input = VisualInput(features: features, beatAge: beatAge, active: true,
-                                lyric: lyricText.map { LyricFrame(id: lyricID, text: $0, revealedWords: reveal) },
+                                lyric: lyricLines.isEmpty || (lyricLines.count > 1 && t.truncatingRemainder(dividingBy: 4) >= 2.8) ? nil : LyricFrame(
+                                    id: lyricLines.count > 1 ? Int(t / 4) : lyricID,
+                                    text: lyricLines[Int(t / 4) % lyricLines.count], revealedWords: reveal),
                                 caption: captionText.map { CaptionFrame(id: "still", title: $0[0], subtitle: $0.count > 1 ? $0[1] : "") })
         input.onsetAge = beatAge  // a kick on every beat
         input.sideProgress = progress
         input.sideEnded = sideEnded && t > seconds - 3.5
+        input.features.tempo = 120
+        // Cycling lines: each is up 2.8 s of every 4, leaving a gap before the next.
+        if lyricLines.count > 1 { input.nextLyricIn = 4 - t.truncatingRemainder(dividingBy: 4) }
+        input.lyricsAvailable = !lyricLines.isEmpty
+        if let (lyrics, timeline) = lrc {
+            // The song's own timing: the position is the frame time.
+            renderer.score = score?.sanitized(for: timeline)
+            input.lyricsAvailable = true
+            input.nextLyricIn = lyrics.nextLineStart(after: t).map { $0 - t }
+            input.nextLyricIndex = lyrics.nextLineIndex(after: t)
+            input.lyric = nil
+            if let cue = lyrics.cue(at: t),
+               t < ((renderer.score?.treatment(line: cue.index)?.hold ?? false) ? cue.end : cue.shownUntil) {
+                input.lyric = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
+            }
+        }
         renderer.render(to: target, input: input, time: t, commandBuffer: buffer)
         buffer.commit()
         await buffer.completed()
+        if let next = pending.first, t + 1 / 60 > next {
+            pending.removeFirst()
+            write(path.replacingOccurrences(of: ".png", with: "-\(Int(next)).png"))
+        }
     }
+    if !snapshots.isEmpty { break }
     var pixels = [UInt8](repeating: 0, count: size[0] * size[1] * 4)
     target.getBytes(&pixels, bytesPerRow: size[0] * 4, from: MTLRegionMake2D(0, 0, size[0], size[1]), mipmapLevel: 0)
     let context = CGContext(data: &pixels, width: size[0], height: size[1], bitsPerComponent: 8, bytesPerRow: size[0] * 4,
@@ -292,6 +352,23 @@ case "still":
     CGImageDestinationAddImage(destination, context.makeImage()!, nil)
     guard CGImageDestinationFinalize(destination) else { fail("couldn't write \(path)") }
     print("wrote \(path)")
+
+case "score-check":
+    guard arguments.count >= 2 else { fail("score-check needs <song.lrc> <score.json>") }
+    let (_, timeline) = try loadLyrics(arguments[0])
+    let raw = try JSONDecoder().decode(TrackScore.self, from: Data(contentsOf: URL(fileURLWithPath: arguments[1])))
+    let score = raw.sanitized(for: timeline)
+    let lost = (raw.keyframes.count - score.keyframes.count, raw.lines.count - score.lines.count)
+    if lost.0 > 0 || lost.1 > 0 { print("references that don't match these lyrics: \(lost.0) keyframes, \(lost.1) line treatments") }
+    let issues = ScoreChecker.check(score, timeline: timeline)
+    print("\(score.sections.count) sections, \(score.keyframes.count) keyframes, \(score.lines.count) line treatments")
+    if issues.isEmpty { print("✔ plays as written") } else { issues.forEach { print("✖ \($0.message)") } }
+
+case "score-prompt":
+    guard let path = arguments.first else { fail("score-prompt needs <song.lrc>") }
+    let (_, timeline) = try loadLyrics(path)
+    let brief = TrackBrief(artist: option("--artist") ?? "Unknown", title: option("--title") ?? "Untitled", timeline: timeline)
+    print(TrackDirector.prompt(brief))
 
 case "validate-shader":
     guard let path = arguments.first else { fail("validate-shader needs a file") }

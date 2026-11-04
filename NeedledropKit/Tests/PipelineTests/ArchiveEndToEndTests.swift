@@ -25,7 +25,7 @@ import Testing
         let library = try Library()
         let engine = Engine(recognizer: ScriptedRecognizer(segments: segments), metadata: nil,
                             archiver: Archiver(settings: settings, library: library))
-        try await engine.start(source: FileReplaySource(url: wav, speed: 20, trailingSilence: 12))
+        try await engine.start(source: FileReplaySource(url: wav, speed: 20, trailingSilence: 12), lockstep: true)
 
         var report: ArchiveReport?
         for await event in engine.events {

@@ -256,6 +256,34 @@ once let another artist's song win.
 **CI** runs `swift test` and an unsigned app build on GitHub's macOS runners. Suites that
 render skip themselves when the runner has no Metal device.
 
+## Made in Milestone 9
+
+**The picture holds still while a line is up, and moves between phrases.** A continuous zoom
+cropped the words and never let them sit on their creases. Now a line comes down about 0.8 s after
+it's sung, and the picture refolds and moves only in the gaps that leaves, settling 0.3 s before the
+next line. Songs without timed lyrics cut every 4 bars, or early on a big swing in loudness.
+
+**A now-playing strip, not a moving cover.** The small cover, title and artist sit bottom left on a
+dark backing for the whole track. They're always readable and never in the way of the words.
+
+**Each line chooses dark or light ink once.** Choosing every frame against paper whose light pulses
+with the bass made lines flash.
+
+**Claude scores each track from its lyrics** (`TrackScore`): sections with an energy, keyframes in
+the gaps before chosen lines (named camera framings, crease count and angle, accent strip, palette
+swap or mute, transition), and per-line emphasis, placement, animation and hold.
+- **References are by line index and checked against the words,** not by time, so clock drift
+  can't misplace them, and a different lyric version is realigned or dropped.
+- **It's a plan, not control.** The engine keeps its guarantees whatever the score says. A
+  keyframe whose gap is too short waits for the next long-enough gap.
+- **Every score is dry-run before use** (`ScoreChecker`). The gap for each transition, and whether
+  each treated line fits its composition clear of the strip, get checked. Claude gets one
+  correction turn (the shader validator's pattern), then whatever still fails is dropped.
+- **Sonnet 5.5 at medium effort by default.** It's text-only planning, so it doesn't need Opus.
+  The album look stays on Opus because it reads the cover and can write a shader. Both models
+  can be changed in Settings.
+- **Cached per track and lyric version.** The album's next track is scored ahead of time.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

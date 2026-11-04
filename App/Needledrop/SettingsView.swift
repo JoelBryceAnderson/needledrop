@@ -265,6 +265,11 @@ struct SettingsView: View {
                 Text("Googie").tag(AppTheme.googie)
                 Text("Smoke").tag(AppTheme.smoke)
             }
+            Picker("Motion", selection: $model.settings.motion) {
+                Text("Directed (shots change with the music)").tag(MotionChoice.directed)
+                Text("Gentle").tag(MotionChoice.gentle)
+                Text("Still").tag(MotionChoice.still)
+            }
             Toggle("Album art  (A)", isOn: $model.settings.showCover)
             Picker("Cover", selection: $model.settings.cover) {
                 Text("Auto (art director chooses)").tag(CoverChoice.auto)
@@ -343,7 +348,14 @@ private struct ArtDirectorSection: View {
                     }
                 }
             }
-            TextField("Model", text: $model.settings.artDirector.model)
+            TextField("Album look model", text: $model.settings.artDirector.model)
+            Toggle("Claude scores each track from its lyrics", isOn: $model.settings.artDirector.scoreTracks)
+                .disabled(!model.settings.artDirector.enabled)
+            TextField("Track score model", text: $model.settings.artDirector.scoreModel)
+                .disabled(!model.settings.artDirector.enabled || !model.settings.artDirector.scoreTracks)
+            Text(model.scoreStatus)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
             HStack {
                 Text(model.artDirectionStatus)
                     .foregroundStyle(.secondary)

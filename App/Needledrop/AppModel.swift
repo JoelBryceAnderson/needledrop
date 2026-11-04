@@ -62,6 +62,15 @@ final class AppModel {
     private var pendingPlayerTrack: (track: PlayerTrack, position: Double?, received: Date)?
     private var applyingPlayerTrack = false
     private let styleStore = StyleStore(directory: MetadataResolver.defaultCacheDirectory.appendingPathComponent("styles"))
+    private let scoreStore = ScoreStore(directory: MetadataResolver.defaultCacheDirectory.appendingPathComponent("scores"))
+    /// The track score: what's happening with it, for Settings and the debug overlay.
+    private(set) var scoreStatus = "No track yet"
+    /// Track (artist|title) scored or being scored, and its score once it's in.
+    private var scoringTrack: String?
+    private var score: TrackScore?
+    /// Tracks scored ahead of time (the next one on the album).
+    private var prefetched: Set<String> = []
+    private var lastTempo: Double?
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
     private(set) var microphoneDenied = false
@@ -92,6 +101,7 @@ final class AppModel {
     /// line up with what the room hears rather than what the Mac hears.
     private func visualInput() -> VisualInput {
         let (features, beatAge, onsetAge) = pipeline.features(delayedBy: settings.outputLatency)
+        if let tempo = features.tempo { lastTempo = tempo }
         let session = engine.session()
         var input = VisualInput(features: features, beatAge: beatAge,
                                 active: session.phase != .idle && session.phase != .sideEnded)
@@ -101,6 +111,8 @@ final class AppModel {
             input.sideProgress = min(1, max(0, (features.time - start) / Self.typicalSideLength))
         }
         input.rpm = rpm
+        // A new track is a new scene: the choreographer opens on an establishing shot.
+        input.trackID = metadata.map { "\($0.artist)|\($0.title)" }
         if session.phase == .sideEnded, sideIndex >= 0 {
             // The intermission card, printed like the caption.
             let side = Self.sideLetter(sideIndex), next = Self.sideLetter(sideIndex + 1)
@@ -114,9 +126,19 @@ final class AppModel {
            let clock = session.clock, session.identifiedByHand || clock.confidence(at: features.time) > 0.15 {
             input.lyricsAvailable = true
             let position = clock.position(at: features.time)
-            if let cue = lyrics.cue(at: position) {
+            // The picture moves between lines: tell it how long until the next one.
+            input.nextLyricIn = lyrics.nextLineStart(after: position).map { ($0 - position) / clock.rate }
+            input.nextLyricIndex = lyrics.nextLineIndex(after: position)
+            // The track's score can hold a line up until the next one, or set its animation.
+            if let cue = lyrics.cue(at: position),
+               position < ((score?.treatment(line: cue.index)?.hold ?? false) ? cue.end : cue.shownUntil) {
                 var frame = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
-                if typewriter {
+                let typed = switch score?.treatment(line: cue.index)?.animation ?? .default {
+                case .default: typewriter
+                case .ink: false
+                case .typewriter: true
+                }
+                if typed {
                     // Words in time with the singing, snapped onto the beat grid where it's close.
                     var beats: [Double] = []
                     if let bpm = features.tempo, let beatAge {
@@ -125,7 +147,7 @@ final class AppModel {
                         let k0 = ((cue.start - beat) / period).rounded(.down)
                         beats = (0..<64).map { beat + (k0 + Double($0)) * period }.filter { $0 <= cue.end }
                     }
-                    let starts = WordTiming.starts(for: cue.text, from: cue.start, to: cue.end, beats: beats)
+                    let starts = WordTiming.starts(for: cue.text, from: cue.start, to: cue.sungEnd, beats: beats)
                     frame.revealedWords = WordTiming.revealed(at: position, starts: starts)
                 }
                 input.lyric = frame
@@ -149,6 +171,8 @@ final class AppModel {
         }
         presentVisuals()
         presentation.onDisplaysChanged = { [weak self] in self?.presentVisuals() }
+        presentation.onToggleFullScreen = { [weak self] in self?.toggleFullScreen() }
+        presentation.onFullScreenEnded = { [weak self] in self?.settings.fullScreen = false }
     }
 
     // MARK: - Input
@@ -306,6 +330,10 @@ final class AppModel {
         case .trackChanged(let track):
             metadata = nil
             artwork = nil
+            // The score belongs to the track that's ending.
+            score = nil
+            scoringTrack = nil
+            renderer?.score = nil
             if let track {
                 append("♫ \(track.artist) — \(track.title)")
             } else if engine.session().unidentified {
@@ -318,7 +346,9 @@ final class AppModel {
             artwork = data.flatMap(NSImage.init(data:))
             artworkData = data
             updateLook(for: info)
+            requestScore()
         case .lyrics(let lyrics):
+            requestScore()
             if let lyrics, lyrics.instrumental {
                 append("Instrumental — no lyrics")
             } else if let lyrics, lyrics.isSynced {
@@ -406,6 +436,70 @@ final class AppModel {
                 self.append("Art director: \(error)")
             }
         }
+    }
+
+    // MARK: - Track scores
+
+    /// Asks Claude to score the track playing (once its metadata and synced lyrics are in),
+    /// then the next one on the album, so it's ready when it starts.
+    private func requestScore() {
+        let session = engine.session()
+        guard let info = metadata, let lyrics = session.lyrics, lyrics.isSynced, !lyrics.instrumental else { return }
+        let track = "\(info.artist)|\(info.title)"
+        guard scoringTrack != track, let director = makeTrackDirector() else { return }
+        scoringTrack = track
+        let brief = TrackBrief(artist: info.artist, title: info.title, album: info.album, tempo: lastTempo,
+                               timeline: Self.timeline(lyrics, duration: info.duration),
+                               style: renderer?.currentStyle ?? LookStyle(), mood: currentMood)
+        scoreStatus = "Scoring “\(info.title)”…"
+        Task { [weak self] in
+            do {
+                let result = try await director.score(for: brief)
+                guard let self, self.scoringTrack == track else { return }
+                self.score = result.score
+                self.renderer?.score = result.score
+                let detail = "\(result.score.sections.count) sections, \(result.score.keyframes.count) keyframes"
+                self.scoreStatus = "“\(info.title)”: \(result.score.notes.isEmpty ? detail : result.score.notes) (\(detail)\(result.fromCache ? ", saved" : ""))"
+                if !result.fromCache {
+                    self.append("Scored “\(info.title)”: \(detail)" + (result.dropped.isEmpty ? "" : ", \(result.dropped.count) moves dropped"))
+                }
+                await self.prefetchScore(after: info, director: director)
+            } catch {
+                guard let self, self.scoringTrack == track else { return }
+                self.scoreStatus = "Score for “\(info.title)”: \(error) — using the built-in moves"
+            }
+        }
+    }
+
+    /// Scores the album's next track ahead of time (its lyrics are fetched the same way).
+    private func prefetchScore(after info: TrackMetadata, director: TrackDirector) async {
+        guard let next = await metadataResolver.nextTrack(after: info) else { return }
+        let key = "\(next.artist)|\(next.title)"
+        guard !prefetched.contains(key), let lyrics = await lyricsProvider.lyrics(for: next), lyrics.isSynced,
+              !lyrics.instrumental else { return }
+        prefetched.insert(key)
+        let brief = TrackBrief(artist: next.artist, title: next.title, album: next.album, tempo: nil,
+                               timeline: Self.timeline(lyrics, duration: next.duration),
+                               style: renderer?.currentStyle ?? LookStyle(), mood: currentMood)
+        _ = try? await director.score(for: brief)  // cached for when it plays
+    }
+
+    /// The lyrics as the visuals plan with them.
+    static func timeline(_ lyrics: Lyrics, duration: Double?) -> LyricTimeline {
+        let lines = lyrics.lines.indices.compactMap { i -> LyricTimeline.Line? in
+            guard !lyrics.lines[i].text.isEmpty, let cue = lyrics.cue(at: lyrics.lines[i].time), cue.index == i else { return nil }
+            return LyricTimeline.Line(index: i, start: cue.start, shownUntil: cue.shownUntil, heldUntil: cue.end, text: cue.text)
+        }
+        return LyricTimeline(lines: lines, duration: duration)
+    }
+
+    private var currentMood: String? {
+        artDirectionStatus.hasPrefix("“") ? artDirectionStatus.components(separatedBy: "”").first.map { String($0.dropFirst()) } : nil
+    }
+
+    private func makeTrackDirector() -> TrackDirector? {
+        guard settings.artDirector.enabled, settings.artDirector.scoreTracks, let key = APIKeyStore.load() else { return nil }
+        return TrackDirector(client: ClaudeClient(apiKey: key, model: settings.artDirector.scoreModel), store: scoreStore)
     }
 
     private func makeArtDirector() -> ArtDirector? {
@@ -498,6 +592,7 @@ final class AppModel {
         case .googie: .googie
         }
         renderer?.showCover = settings.showCover
+        renderer?.motion = settings.motion.amount
         renderer?.renderResolution = settings.renderResolution
         renderer?.coverModeOverride = switch settings.cover {
         case .auto: nil

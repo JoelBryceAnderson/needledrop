@@ -58,6 +58,12 @@ public final class ListeningPipeline: @unchecked Sendable {
     private let pendingConfig = Mutex<SideDetectorConfig?>(nil)
     private let history = Mutex(FeatureHistory())
     private let running = Atomic<Bool>(false)
+    /// Lockstep (sped-up replays in tests): after each side event and tick the analysis waits
+    /// for the consumer to `acknowledge` it, so the session (an actor) opens and closes
+    /// recognition windows at the right audio time however busy the machine is. Live audio
+    /// never waits.
+    private var lockstep = false
+    private let handled = DispatchSemaphore(value: 0)
     private let sourceFinished = Atomic<Bool>(false)
     private var source: (any AudioSource)?
     private var thread: Thread?
@@ -100,8 +106,14 @@ public final class ListeningPipeline: @unchecked Sendable {
         pendingConfig.withLock { $0 = config }
     }
 
-    public func start(source: any AudioSource) throws {
+    /// The consumer has handled a side event or tick (lockstep only).
+    public func acknowledge() {
+        if lockstep { handled.signal() }
+    }
+
+    public func start(source: any AudioSource, lockstep: Bool = false) throws {
         precondition(!running.load(ordering: .acquiring), "pipeline already started")
+        self.lockstep = lockstep
         self.source = source
         shared.withLock { $0.sourceName = source.displayName }
         running.store(true, ordering: .releasing)
@@ -227,10 +239,12 @@ public final class ListeningPipeline: @unchecked Sendable {
             working.recentEvents.append(event)
             if working.recentEvents.count > 20 { working.recentEvents.removeFirst() }
             continuation.yield(.side(event))
+            if lockstep { _ = handled.wait(timeout: .now() + 5) }
         }
         if features.time >= nextTick {
             nextTick = features.time + Self.tickInterval
             continuation.yield(.tick(time: features.time, phase: core.detector.phase))
+            if lockstep { _ = handled.wait(timeout: .now() + 5) }
         }
         let snapshot = working
         shared.withLock { current in

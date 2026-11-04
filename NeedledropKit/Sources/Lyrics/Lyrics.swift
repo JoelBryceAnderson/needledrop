@@ -19,6 +19,19 @@ public struct LyricCue: Sendable, Equatable {
     public var start: Double
     public var end: Double
     public var next: String?
+
+    /// Roughly when the singing of the line is done: a fifth of a second a syllable, within
+    /// the line's time.
+    public var sungEnd: Double {
+        let syllables = WordTiming.words(text).reduce(0) { $0 + WordTiming.syllables($1) }
+        return min(end, start + min(6, max(1.2, Double(syllables) * 0.2)))
+    }
+
+    /// How long the line stays printed: a moment past its singing (at least 2.2 s), not to
+    /// the next line. That leaves gaps between phrases for the picture to move in.
+    public var shownUntil: Double {
+        min(end, max(start + 2.2, sungEnd + 0.8))
+    }
 }
 
 public struct Lyrics: Sendable, Equatable, Codable {
@@ -49,6 +62,16 @@ public struct Lyrics: Sendable, Equatable, Codable {
         guard !line.text.isEmpty, position < end else { return nil }
         let upcoming = lines[(index + 1)...].first { !$0.text.isEmpty }?.text
         return LyricCue(index: index, text: line.text, start: line.time, end: end, next: upcoming)
+    }
+
+    /// The index of the next line with words after `position`.
+    public func nextLineIndex(after position: Double) -> Int? {
+        lines.firstIndex { $0.time > position && !$0.text.isEmpty }
+    }
+
+    /// When the next line with words starts after `position`.
+    public func nextLineStart(after position: Double) -> Double? {
+        lines.first { $0.time > position && !$0.text.isEmpty }?.time
     }
 }
 

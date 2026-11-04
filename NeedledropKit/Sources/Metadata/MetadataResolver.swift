@@ -131,6 +131,20 @@ public actor MetadataResolver {
         return response.results.first { $0.kind == "song" }.map(Self.metadata)
     }
 
+    /// The track after `track` on its album (by disc and track number), for getting ready
+    /// before it plays. Nil without an album ID, at the end of the album, or offline.
+    public func nextTrack(after track: TrackMetadata) async -> TrackMetadata? {
+        guard let album = track.collectionID, let number = track.trackNumber else { return nil }
+        var components = URLComponents(string: "https://itunes.apple.com/lookup")!
+        components.queryItems = [.init(name: "id", value: album), .init(name: "entity", value: "song")]
+        guard let url = components.url, let data = try? await http.get(url, headers: userAgentHeader),
+              let response = try? JSONDecoder().decode(ITunesResponse.self, from: data) else { return nil }
+        let disc = track.discNumber ?? 1
+        let songs = response.results.filter { $0.kind == "song" }.map(Self.metadata)
+            .sorted { (($0.discNumber ?? 1), ($0.trackNumber ?? 0)) < (($1.discNumber ?? 1), ($1.trackNumber ?? 0)) }
+        return songs.first { ($0.discNumber ?? 1, $0.trackNumber ?? 0) > (disc, number) }
+    }
+
     private func search(artist: String, title: String) async throws -> TrackMetadata? {
         var components = URLComponents(string: "https://itunes.apple.com/search")!
         components.queryItems = [

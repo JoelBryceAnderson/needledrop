@@ -14,10 +14,37 @@ enum CoverChoice: String, Codable, CaseIterable { case auto, living, dissolve, r
 enum LyricAnimationChoice: String, Codable, CaseIterable { case auto, ink, typewriter }
 enum RPMChoice: String, Codable, CaseIterable { case auto, rpm33, rpm45 }
 enum IdleScreen: String, Codable, CaseIterable { case libraryWall, black }
+/// How much the picture is directed over a song (shots, camera moves, the cover moving).
+enum MotionChoice: String, Codable, CaseIterable {
+    case still, gentle, directed
+
+    var amount: Double {
+        switch self {
+        case .still: 0
+        case .gentle: 0.5
+        case .directed: 1
+        }
+    }
+}
 
 struct ArtDirectorSettings: Codable, Equatable {
     var enabled = true
+    /// The album look (reads the cover, may write a shader).
     var model = ClaudeClient.defaultModel
+    /// Score each track from its lyrics (keyframes, sections, line treatments).
+    var scoreTracks = true
+    var scoreModel = TrackDirector.defaultModel
+
+    init() {}
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ArtDirectorSettings()
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
+        scoreTracks = try c.decodeIfPresent(Bool.self, forKey: .scoreTracks) ?? d.scoreTracks
+        scoreModel = try c.decodeIfPresent(String.self, forKey: .scoreModel) ?? d.scoreModel
+    }
 }
 
 enum InputSelection: Codable, Hashable {
@@ -41,6 +68,7 @@ struct AppSettings: Codable, Equatable {
     var lyricAnimation: LyricAnimationChoice = .auto
     var rpm: RPMChoice = .auto
     var idleScreen: IdleScreen = .libraryWall
+    var motion: MotionChoice = .directed
     /// Replays play through the Mac's speakers too (never the turntable path).
     var replayAudible = true
     /// Take what's playing from Apple Music / Spotify when they're the source.
@@ -74,6 +102,7 @@ struct AppSettings: Codable, Equatable {
         lyricAnimation = (try? c.decodeIfPresent(LyricAnimationChoice.self, forKey: .lyricAnimation)) ?? d.lyricAnimation
         rpm = (try? c.decodeIfPresent(RPMChoice.self, forKey: .rpm)) ?? d.rpm
         idleScreen = (try? c.decodeIfPresent(IdleScreen.self, forKey: .idleScreen)) ?? d.idleScreen
+        motion = (try? c.decodeIfPresent(MotionChoice.self, forKey: .motion)) ?? d.motion
         replayAudible = try c.decodeIfPresent(Bool.self, forKey: .replayAudible) ?? d.replayAudible
         followMusicApps = try c.decodeIfPresent(Bool.self, forKey: .followMusicApps) ?? d.followMusicApps
         setupCompleted = try c.decodeIfPresent(Bool.self, forKey: .setupCompleted) ?? d.setupCompleted

@@ -40,7 +40,7 @@ import Testing
     }
 
     private func renderer(mode: LookStyle.CoverMode, art: (CGFloat, CGFloat, CGFloat) = (1, 0.85, 0.2)) throws -> VisualsRenderer {
-        let r = try VisualsRenderer()
+        let r = try VisualsRenderer.still()
         r.coverModeOverride = mode
         r.show(AlbumLook(id: "x", palette: Palette(colors: [RGB(0.3, 0.5, 0.7), RGB(0.6, 0.7, 0.8)]), artwork: cover(art)), at: 0)
         return r
@@ -72,12 +72,12 @@ import Testing
 
     @Test func typewriterPrintsOnlyTheWordsSungSoFar() throws {
         func ink(_ revealed: Double?) throws -> Int {
-            let r = try VisualsRenderer()
+            let r = try VisualsRenderer.still()
             let pixels = render(r) { _ in
                 VisualInput(features: playing, active: true,
                             lyric: LyricFrame(id: 0, text: "one two three four five six", revealedWords: revealed))
             }
-            let plain = render(try VisualsRenderer()) { _ in VisualInput(features: playing, active: true) }
+            let plain = render(try VisualsRenderer.still()) { _ in VisualInput(features: playing, active: true) }
             var n = 0
             for i in stride(from: 0, to: pixels.count, by: 4) where abs(Int(pixels[i]) - Int(plain[i])) > 30 { n += 1 }
             return n

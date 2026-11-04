@@ -86,7 +86,8 @@ private func director(_ transport: FakeTransport, valid: @escaping @Sendable (St
         #expect(first.style.foldAngle == -22 && first.style.animation == .typewriter)
         #expect(first.palette?.colors.count == Palette.size)
         _ = try await director.direction(for: brief, key: "a", theme: .auto)
-        #expect(transport.requests.withLock { $0.count } == 1)  // one call per album
+        let calls: Int = transport.requests.withLock { $0.count }
+        #expect(calls == 1)  // one call per album
     }
 
     @Test func aFailingShaderGetsOneFixWithTheErrorAndTheReplyEchoed() async throws {
@@ -135,7 +136,8 @@ private func director(_ transport: FakeTransport, valid: @escaping @Sendable (St
         await store.setPinned(true, for: "a")
         let pinned = try await director.direction(for: brief, key: "a", theme: .auto, reroll: true)
         #expect(pinned.spec.mood == "Night swim")
-        #expect(transport.requests.withLock { $0.count } == 2)
+        let callsAfter: Int = transport.requests.withLock { $0.count }
+        #expect(callsAfter == 2)
     }
 
     @Test func specValidationCatchesWhatTheSchemaCannot() throws {

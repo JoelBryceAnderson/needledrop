@@ -22,7 +22,13 @@ public final class FileReplaySource: AudioSource, @unchecked Sendable {
     public var displayName: String { "Replay: \(url.lastPathComponent)" }
 
     private let running = Atomic<Bool>(false)
-    private let output = Mutex<(engine: AVAudioEngine, player: AVAudioPlayerNode)?>(nil)
+    /// The audible copy's engine and player. Only touched under `output`'s lock, so it's
+    /// safe to hand between threads (older compilers insist on Sendable here).
+    private struct Output: @unchecked Sendable {
+        var engine: AVAudioEngine
+        var player: AVAudioPlayerNode
+    }
+    private let output = Mutex<Output?>(nil)
 
     public init(url: URL, speed: Double = 1, loop: Bool = false, trailingSilence: Double = 12, audible: Bool = false) {
         self.url = url
@@ -70,7 +76,8 @@ public final class FileReplaySource: AudioSource, @unchecked Sendable {
         schedule(player, loop: 0, fileFrames: fileFrames, silenceFrames: silenceFrames)
         if loop { schedule(player, loop: 1, fileFrames: fileFrames, silenceFrames: silenceFrames) }
         player.play()
-        output.withLock { $0 = (engine, player) }
+        let started = Output(engine: engine, player: player)
+        output.withLock { $0 = started }
         return player
     }
 

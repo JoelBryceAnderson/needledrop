@@ -22,9 +22,9 @@ enum Shaders {
         float4 audio;   // bass, mids, highs, level
         float4 rhythm;  // beat, unused, mix (0 = previous slot, 1 = current), coverAmount
         float4 slots;   // hasArt0, hasArt1, hasMask0, hasMask1
-        float4 style;   // background (0 paper, 1 smoke, 2 googie, 3 custom), cover centre x (uv), cover size (frame heights), unused
+        float4 style;   // background (0 paper, 1 smoke, 2 googie, 3 custom), cover centre x (uv), cover size (frame heights), ink tone on flat backgrounds (1 dark, 2 light)
         // Two lyric lines printed on the scene. a: centre.xy, half size.xy (height units, x
-        // across aspect); b: angle, opacity, blur (mip level), unused.
+        // across aspect); b: angle, opacity, blur (mip level), tone (1 dark, 2 light; 0 = choose).
         float4 ink0a;
         float4 ink0b;
         float4 ink1a;
@@ -33,12 +33,16 @@ enum Shaders {
         float4 ink2b;
         float4 inkWords; // typewriter: words in slot 0, words shown in slot 0, same for slot 1
         float4 crease[4]; // normal.xy, offset (dot(q, normal) > offset = past it), active
-        float4 fold;    // tilt (radians), accent strip, unused, unused
+        float4 fold;    // tilt (radians), accent strip, palette swap 0…1, palette mute 0…1
         float4 cover;   // mode (0 living, 1 dissolve, 2 record), dissolve amount, record angle, side progress
-        float4 scene;   // wind-down (0…1), unused…
+        float4 scene;   // wind-down (0…1), cover centre y (uv), cover rotation (radians), cover visibility
         float4 light;   // xyz
         float4 palette0[6];
         float4 palette1[6];
+        // The camera over the background: rows of a homography from the screen (scene units,
+        // centred) to the background plane (scene units). Perspective tilts live here.
+        float4 camera[3];
+        float4 strip;   // the now-playing strip's backing: min.xy, max.xy (screen, scene units); 0 = none
     };
 
     struct VOut {
@@ -111,6 +115,30 @@ enum Shaders {
         return max(c, 0.0);
     }
 
+    float2 rot2(float2 p, float a) {
+        float c = cos(a), s = sin(a);
+        return float2(c * p.x - s * p.y, s * p.x + c * p.y);
+    }
+
+    // --- The camera --------------------------------------------------------------
+
+    /// Screen uv → background uv, through the choreographer's camera.
+    float2 toWorld(float2 uv, constant Uniforms &u) {
+        float aspect = u.frame.x / u.frame.y;
+        float3 q = float3(uv.x * aspect - aspect * 0.5, uv.y - 0.5, 1.0);
+        float3 h = float3(dot(u.camera[0].xyz, q), dot(u.camera[1].xyz, q), dot(u.camera[2].xyz, q));
+        float2 w = h.xy / max(h.z, 1e-3);
+        return float2(w.x / aspect, w.y);
+    }
+
+    /// How far the plane recedes at this pixel (1 = at rest): the far side of a tilted sheet
+    /// sits a little in shadow, which is most of what sells the depth.
+    float cameraDepth(float2 uv, constant Uniforms &u) {
+        float aspect = u.frame.x / u.frame.y;
+        float3 q = float3(uv.x * aspect - aspect * 0.5, uv.y - 0.5, 1.0);
+        return max(dot(u.camera[2].xyz, q), 1e-3);
+    }
+
     // --- Lyrics as ink on the paper ---------------------------------------------
 
     /// `words` > 0: only the first `shown` words print (the word index is in red).
@@ -131,27 +159,32 @@ enum Shaders {
 
     /// Ink coverage at scene uv: both lyric slots (one can soak out as the next soaks in)
     /// and the caption.
-    float inkAt(float2 uv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1,
+    /// Lyrics are printed on the background (`wuv`, so the camera moves over them); the
+    /// caption is a title card and stays put on screen (`suv`).
+    float inkAt(float2 wuv, float2 suv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1,
                 texture2d<float> ink2) {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
-        float2 q = float2(uv.x * u.frame.x / u.frame.y, uv.y);
+        float aspect = u.frame.x / u.frame.y;
+        float2 q = float2(wuv.x * aspect, wuv.y);
         float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s, u.inkWords.x, u.inkWords.y);
         float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s, u.inkWords.z, u.inkWords.w);
-        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
+        float a2 = inkLine(float2(suv.x * aspect, suv.y), u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
         return 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
     }
 
     /// The centre (uv) of whichever line has the most ink at `uv`, so a line can take one
     /// ink colour throughout instead of flipping where it crosses light and dark shapes.
-    float2 inkCentre(float2 uv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1,
+    /// In background uv, like `toWorld`.
+    float2 inkCentre(float2 wuv, float2 suv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1,
                      texture2d<float> ink2) {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
         float aspect = u.frame.x / u.frame.y;
-        float2 q = float2(uv.x * aspect, uv.y);
+        float2 q = float2(wuv.x * aspect, wuv.y);
         float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s, u.inkWords.x, u.inkWords.y);
         float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s, u.inkWords.z, u.inkWords.w);
-        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
-        float2 c = a0 >= a1 && a0 >= a2 ? u.ink0a.xy : (a1 >= a2 ? u.ink1a.xy : u.ink2a.xy);
+        float a2 = inkLine(float2(suv.x * aspect, suv.y), u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
+        if (a2 > a0 && a2 > a1) return toWorld(float2(u.ink2a.x / aspect, u.ink2a.y), u);
+        float2 c = a0 >= a1 ? u.ink0a.xy : u.ink1a.xy;
         return float2(c.x / aspect, c.y);
     }
 
@@ -159,6 +192,23 @@ enum Shaders {
     float3 inkColor(float3 paper, constant float4 *pal) {
         float lum = dot(paper, float3(0.2126, 0.7152, 0.0722));
         return lum > 0.4 ? pal[0].rgb * 0.85 : mix(pal[5].rgb, float3(1.0), 0.45);
+    }
+
+    /// A soft dark band behind the now-playing strip, so the small words read on any paper.
+    float3 stripBacking(float3 c, float2 suv, constant Uniforms &u) {
+        if (u.strip.z <= u.strip.x) return c;
+        float2 p = float2(suv.x * u.frame.x / u.frame.y, suv.y);
+        float2 centre = (u.strip.xy + u.strip.zw) * 0.5, extent = (u.strip.zw - u.strip.xy) * 0.5;
+        float2 d = abs(p - centre) - (extent - 0.02);
+        float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - 0.02;
+        return c * (1.0 - 0.6 * (1.0 - smoothstep(-0.006, 0.012, dist)));
+    }
+
+    /// A line's ink: its tone was chosen once, when it was placed (1 dark, 2 light), so it
+    /// never flickers as the paper's light moves; 0 falls back to choosing against `paper`.
+    float3 toneColor(float tone, float3 paper, constant float4 *pal) {
+        if (tone < 0.5) return inkColor(paper, pal);
+        return tone < 1.5 ? pal[0].rgb * 0.85 : mix(pal[5].rgb, float3(1.0), 0.45);
     }
 
     // --- Paper: a sheet folded along a few long creases (geometry from FoldLayout) ---
@@ -173,40 +223,77 @@ enum Shaders {
         return k;
     }
 
-    float3 paper(float2 uv, constant Uniforms &u, constant float4 *pal,
-                 texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
-        float aspect = u.frame.x / u.frame.y;
-        float3 light = u.light.xyz;
+    /// The sheet's colour at q (scene units), lit by its folds.
+    float3 sheetAt(float2 q, constant Uniforms &u, constant float4 *pal) {
         float tilt = u.fold.x;
         float3 sheet = max(pal[3].rgb, float3(0.12));
         float3 accent = max(pal[4].rgb, float3(0.12));
+        // The score's palette moves: swap the two (fold.z), drain the colour (fold.w).
+        float3 swapped = mix(sheet, accent, u.fold.z);
+        accent = mix(accent, sheet, u.fold.z);
+        sheet = swapped;
+        float3 greyS = float3(dot(sheet, float3(0.2126, 0.7152, 0.0722)));
+        float3 greyA = float3(dot(accent, float3(0.2126, 0.7152, 0.0722)));
+        sheet = mix(sheet, greyS, u.fold.w * 0.75);
+        accent = mix(accent, greyA, u.fold.w * 0.75);
+        float2 m = u.crease[0].xy;  // the creases run (nearly) parallel
+        int k = stripAt(q, u);
+        float sgn = (k & 1) == 0 ? 1.0 : -1.0;
+        float3 n = normalize(float3(m * sin(tilt) * sgn, cos(tilt)));
+        float lit = 0.38 + 0.85 * max(0.0, dot(n, u.light.xyz));
+        // One sheet colour, with the album's second colour on one strip for an accent.
+        return (k == int(u.fold.y) ? accent : sheet) * lit;
+    }
+
+    /// xyz: the ink colour, w: coverage. Each line takes one colour, chosen against the paper
+    /// at its centre, so it doesn't flip where it crosses light and dark strips.
+    float4 inkOn(float2 q, float2 suv, constant Uniforms &u, constant float4 *pal,
+                 texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
+        constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
+        float aspect = u.frame.x / u.frame.y;
+        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s, u.inkWords.x, u.inkWords.y);
+        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s, u.inkWords.z, u.inkWords.w);
+        float a2 = inkLine(float2(suv.x * aspect, suv.y), u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
+        float a = 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
+        if (a < 0.001) return float4(0.0);
+        float3 under;
+        float tone;
+        if (a0 >= a1 && a0 >= a2) {
+            under = sheetAt(u.ink0a.xy, u, pal);
+            tone = u.ink0b.w;
+        } else if (a1 >= a2) {
+            under = sheetAt(u.ink1a.xy, u, pal);
+            tone = u.ink1b.w;
+        } else {
+            float2 w = toWorld(float2(u.ink2a.x / aspect, u.ink2a.y), u);
+            under = sheetAt(float2(w.x * aspect, w.y), u, pal);
+            tone = u.ink2b.w;
+        }
+        return float4(toneColor(tone, under, pal), a);
+    }
+
+    float3 paperSample(float2 suv, constant Uniforms &u, constant float4 *pal,
+                       texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
+        float aspect = u.frame.x / u.frame.y;
+        float2 wuv = toWorld(suv, u);
+        float2 q = float2(wuv.x * aspect, wuv.y);
+        float3 c = stripBacking(sheetAt(q, u, pal), suv, u);
+        float4 ink = inkOn(q, suv, u, pal, ink0, ink1, ink2);
+        return mix(c, ink.rgb, ink.a * 0.92);
+    }
+
+    float3 paper(float2 uv, constant Uniforms &u, constant float4 *pal,
+                 texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
         // 4× supersampling: clean creases and letters at 480 lines.
         const float2 offsets[4] = { float2(-0.25, -0.25), float2(0.25, -0.25), float2(-0.25, 0.25), float2(0.25, 0.25) };
         float3 sum = float3(0.0);
         for (int s = 0; s < 4; s++) {
-            float2 suv = uv + offsets[s] / u.frame.xy;
-            float2 q = float2(suv.x * aspect, suv.y);
-            int k = stripAt(q, u);
-            float2 m = u.crease[0].xy;  // the creases run (nearly) parallel
-            float sgn = (k % 2 == 0) ? 1.0 : -1.0;
-            float3 n = normalize(float3(m * sin(tilt) * sgn, cos(tilt)));
-            float lit = 0.38 + 0.85 * max(0.0, dot(n, light));
-            // One sheet colour, with the album's second colour on one strip for an accent.
-            float3 c = (k == int(u.fold.y) ? accent : sheet) * lit;
-            // Ink is chosen against the lit paper, so it reads on bright and shadowed strips.
-            float ink = inkAt(suv, u, ink0, ink1, ink2);
-            c = mix(c, inkColor(c, pal), ink * 0.92);
-            sum += c;
+            sum += paperSample(uv + offsets[s] / u.frame.xy, u, pal, ink0, ink1, ink2);
         }
         return sum * 0.25;
     }
 
     // --- Googie: mid-century atomic-age shapes in flat colour ---------------------
-
-    float2 rot2(float2 p, float a) {
-        float c = cos(a), s = sin(a);
-        return float2(c * p.x - s * p.y, s * p.x + c * p.y);
-    }
 
     float modPositive(float x, float y) { return x - y * floor(x / y); }
 
@@ -301,8 +388,8 @@ enum Shaders {
     Cover livingCover(float2 uv, constant Uniforms &u, texture2d<float> art, texture2d<float> mask,
                       float hasMask, sampler s) {
         float aspect = u.frame.x / u.frame.y;
-        // Centred, or moved aside to leave a field for lyrics (animated by the renderer).
-        float2 p = (uv - float2(u.style.y, 0.5)) * float2(aspect, 1.0);
+        // Wherever the choreographer has put it, turned a little.
+        float2 p = rot2((uv - float2(u.style.y, u.scene.y)) * float2(aspect, 1.0), -u.scene.z);
         float size = u.style.z * (1.0 + 0.005 * u.rhythm.x);
         float2 c = p / size + 0.5;
 
@@ -423,15 +510,18 @@ enum Shaders {
         if (background == 0) {
             base = paper(uv, u, pal, ink0, ink1, ink2);
         } else {
-            base = flatBackground(background, uv, u, pal);
-            float ink = inkAt(uv, u, ink0, ink1, ink2);
+            float2 wuv = toWorld(uv, u);
+            base = stripBacking(flatBackground(background, wuv, u, pal), uv, u);
+            float ink = inkAt(wuv, uv, u, ink0, ink1, ink2);
             if (ink > 0.001) {
                 // One ink colour per line, chosen against the background at its centre.
-                float3 under = flatBackground(background, inkCentre(uv, u, ink0, ink1, ink2), u, pal);
-                base = mix(base, inkColor(under, pal), ink * 0.92);
+                float3 under = flatBackground(background, inkCentre(wuv, uv, u, ink0, ink1, ink2), u, pal);
+                base = mix(base, toneColor(u.style.w, under, pal), ink * 0.92);
             }
         }
-        float amount = u.rhythm.w * hasArt;
+        // The receding side of a tilted plane falls into shadow; the near side lifts a touch.
+        base *= clamp(1.0 - (1.0 - cameraDepth(uv, u)) * 0.9, 0.7, 1.12);
+        float amount = u.rhythm.w * hasArt * u.scene.w;
         if (amount > 0.001) {
             Cover cv = livingCover(uv, u, art, mask, hasMask, s);
             base *= 1.0 - cv.shadow * (1.0 - cv.inside) * amount;

@@ -16,6 +16,10 @@ struct NeedledropApp: App {
             CommandMenu("Controls") {
                 WhatsPlayingButton()
                     .keyboardShortcut("k", modifiers: .command)
+                Button(delegate.model.settings.fullScreen ? "Exit Full Screen" : "Enter Full Screen") {
+                    delegate.model.toggleFullScreen()
+                }
+                .keyboardShortcut("f", modifiers: [.command, .control])
                 Button("Set Up Turntable…") { delegate.model.showSetup() }
             }
         }

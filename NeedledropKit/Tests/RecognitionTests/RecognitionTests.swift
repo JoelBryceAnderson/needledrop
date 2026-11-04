@@ -41,7 +41,9 @@ import Testing
     @Test func confidenceFallsWithStalenessAndBigCorrections() {
         var clock = PlaybackClock(time: 0, position: 0)
         let fresh = clock.confidence(at: 1)
-        #expect(clock.confidence(at: 300) < fresh / 2)
+        // Still good enough for lyrics (> 0.15) five minutes on; halved by ten.
+        #expect(clock.confidence(at: 300) > 0.15)
+        #expect(clock.confidence(at: 600) < fresh / 2)
         clock.add(time: 25, position: 25)
         #expect(clock.confidence(at: 26) > fresh)
         clock.add(time: 50, position: 52.5)
