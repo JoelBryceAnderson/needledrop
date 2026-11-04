@@ -50,6 +50,10 @@ final class AppModel {
     private var lastSideEnded: Date?
     /// When the turntable went quiet (for the library wall).
     private(set) var idleSince: Date?
+    private let playerWatcher = PlayerWatcher()
+    /// A track a music app announced, waiting for Needledrop to hear it start.
+    private var pendingPlayerTrack: (track: PlayerTrack, position: Double?, received: Date)?
+    private var applyingPlayerTrack = false
     private let styleStore = StyleStore(directory: MetadataResolver.defaultCacheDirectory.appendingPathComponent("styles"))
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
@@ -74,6 +78,7 @@ final class AppModel {
         }
         applyVisualSettings()
         renderer?.inputProvider = { [weak self] in self?.visualInput() ?? VisualInput() }
+        playerWatcher.onTrack = { [weak self] track, position in self?.playerAnnounced(track, position: position) }
     }
 
     /// Everything is read `outputLatency` behind the newest audio, so picture and words
@@ -270,6 +275,7 @@ final class AppModel {
                 break
             }
         case .pipeline(.tick):
+            if pendingPlayerTrack != nil { Task { await applyPlayerTrack() } }
             let phase = engine.session().phase
             if phase == .idle || phase == .sideEnded {
                 if idleSince == nil { idleSince = Date() }
@@ -397,6 +403,34 @@ final class AppModel {
 
     private static func hex(_ c: RGB) -> String {
         String(format: "#%02X%02X%02X", Int(c.r * 255), Int(c.g * 255), Int(c.b * 255))
+    }
+
+    // MARK: - Following Apple Music / Spotify
+
+    private func playerAnnounced(_ track: PlayerTrack, position: Double?) {
+        guard settings.followMusicApps, track.playing else { return }  // pauses: the side detector hears them
+        pendingPlayerTrack = (track, position, Date())
+        Task { await applyPlayerTrack() }
+    }
+
+    /// Hands the announced track to the session once there's music to attach it to (a side
+    /// needs ~1.5 s of sound to start). Retried on each tick for up to 30 s.
+    private func applyPlayerTrack() async {
+        // Ticks retry this; only one attempt at a time.
+        guard let pending = pendingPlayerTrack, !applyingPlayerTrack else { return }
+        applyingPlayerTrack = true
+        defer { applyingPlayerTrack = false }
+        let elapsed = Date().timeIntervalSince(pending.received)
+        guard elapsed < 30 else {
+            pendingPlayerTrack = nil
+            return
+        }
+        // Without a reported position, assume it started when the app announced it.
+        let position = (pending.position ?? 0) + elapsed
+        if await engine.identify(title: pending.track.title, artist: pending.track.artist, position: position) {
+            pendingPlayerTrack = nil
+            append("♫ from \(pending.track.source.rawValue): \(pending.track.artist) — \(pending.track.title)")
+        }
     }
 
     /// Names what's playing. Returns a problem to show, or nil on success.

@@ -23,12 +23,15 @@ targets:
         CFBundleDisplayName: Needledrop
         LSApplicationCategoryType: public.app-category.music
         NSMicrophoneUsageDescription: Needledrop listens to your turntable to recognise records, drive the visuals and archive what you play.
+        NSAppleEventsUsageDescription: Needledrop reads where you are in the song playing in Music, to time the lyrics.
         NSAudioCaptureUsageDescription: Needledrop can listen to what this Mac is playing (a browser, a music app) to drive the visuals when the turntable isn't in use.
     entitlements:
       path: App/Needledrop/Needledrop.entitlements
       properties:
         # Not sandboxed: the archive (M5) writes to arbitrary external drives / NAS paths.
         com.apple.security.device.audio-input: true
+        # Reading the playback position from Music (hardened runtime needs this to send Apple events).
+        com.apple.security.automation.apple-events: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.needledrop.Needledrop

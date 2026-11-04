@@ -101,6 +101,7 @@ struct SettingsView: View {
                     }
                 ))
             }
+            Toggle("Follow Apple Music and Spotify", isOn: $model.settings.followMusicApps)
             HStack {
                 Text("Not recognised yet?")
                     .foregroundStyle(.secondary)
