@@ -159,6 +159,9 @@ final class AppModel {
             } else {
                 source = LiveInputSource(deviceUID: nil)
             }
+        case .systemAudio:
+            source = SystemAudioSource()
+            append("Listening to this Mac's audio (not archived)")
         case .replay(let path):
             let url = URL(fileURLWithPath: path)
             source = FileReplaySource(url: url, loop: true, audible: settings.replayAudible)
@@ -179,7 +182,9 @@ final class AppModel {
         }
 
         let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver,
-                            lyrics: lyricsProvider, archiver: Archiver(settings: settings.archive, library: library),
+                            lyrics: lyricsProvider,
+                            // The archive is for records you own: streamed audio isn't recorded.
+                            archiver: settings.input == .systemAudio ? nil : Archiver(settings: settings.archive, library: library),
                             catalog: catalog)
         self.engine = engine
         eventTask = Task { [weak self] in
@@ -446,6 +451,8 @@ final class AppModel {
     }
 
     private func append(_ text: String) {
+        // Recognition errors repeat every matching window; one line is enough.
+        guard log.last?.text != text else { return }
         log.append(LogEntry(text: text))
         if log.count > 100 { log.removeFirst(log.count - 100) }
     }

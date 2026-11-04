@@ -22,6 +22,8 @@
 	<string>1</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.music</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Needledrop can listen to what this Mac is playing (a browser, a music app) to drive the visuals when the turntable isn't in use.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Needledrop listens to your turntable to recognise records, drive the visuals and archive what you play.</string>
 </dict>

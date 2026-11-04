@@ -53,7 +53,10 @@ struct SettingsView: View {
     // MARK: - Input
 
     private var inputOptions: [(InputSelection, String)] {
-        var options: [(InputSelection, String)] = [(.systemDefault, "System default input")]
+        var options: [(InputSelection, String)] = [
+            (.systemDefault, "System default input"),
+            (.systemAudio, "This Mac's audio (YouTube, Spotify…)"),
+        ]
         options += model.devices.map { (.device(uid: $0.uid, name: $0.name), $0.name) }
         if case .device(let uid, let name) = model.settings.input, !model.devices.contains(where: { $0.uid == uid }) {
             options.append((model.settings.input, "\(name) (disconnected)"))

@@ -24,6 +24,8 @@ enum InputSelection: Codable, Hashable {
     case systemDefault
     case device(uid: String, name: String)
     case replay(path: String)
+    /// What this Mac is playing (YouTube, a music app…), via a Core Audio process tap.
+    case systemAudio
 }
 
 /// Everything persisted between launches, as one JSON blob in UserDefaults.
