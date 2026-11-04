@@ -150,6 +150,7 @@ final class AppModel {
         presentVisuals()
         presentation.onDisplaysChanged = { [weak self] in self?.presentVisuals() }
         presentation.onToggleFullScreen = { [weak self] in self?.toggleFullScreen() }
+        presentation.onFullScreenEnded = { [weak self] in self?.settings.fullScreen = false }
     }
 
     // MARK: - Input
