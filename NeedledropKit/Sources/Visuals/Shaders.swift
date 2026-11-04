@@ -22,9 +22,9 @@ enum Shaders {
         float4 audio;   // bass, mids, highs, level
         float4 rhythm;  // beat, unused, mix (0 = previous slot, 1 = current), coverAmount
         float4 slots;   // hasArt0, hasArt1, hasMask0, hasMask1
-        float4 style;   // background (0 paper, 1 smoke, 2 googie, 3 custom), cover centre x (uv), cover size (frame heights), unused
+        float4 style;   // background (0 paper, 1 smoke, 2 googie, 3 custom), cover centre x (uv), cover size (frame heights), ink tone on flat backgrounds (1 dark, 2 light)
         // Two lyric lines printed on the scene. a: centre.xy, half size.xy (height units, x
-        // across aspect); b: angle, opacity, blur (mip level), unused.
+        // across aspect); b: angle, opacity, blur (mip level), tone (1 dark, 2 light; 0 = choose).
         float4 ink0a;
         float4 ink0b;
         float4 ink1a;
@@ -193,6 +193,13 @@ enum Shaders {
         return lum > 0.4 ? pal[0].rgb * 0.85 : mix(pal[5].rgb, float3(1.0), 0.45);
     }
 
+    /// A line's ink: its tone was chosen once, when it was placed (1 dark, 2 light), so it
+    /// never flickers as the paper's light moves; 0 falls back to choosing against `paper`.
+    float3 toneColor(float tone, float3 paper, constant float4 *pal) {
+        if (tone < 0.5) return inkColor(paper, pal);
+        return tone < 1.5 ? pal[0].rgb * 0.85 : mix(pal[5].rgb, float3(1.0), 0.45);
+    }
+
     // --- Paper: a sheet folded along a few long creases (geometry from FoldLayout) ---
 
     /// Strip index at q: how many creases q is past. Strips alternate mountain / valley.
@@ -231,15 +238,19 @@ enum Shaders {
         float a = 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
         if (a < 0.001) return float4(0.0);
         float3 under;
+        float tone;
         if (a0 >= a1 && a0 >= a2) {
             under = sheetAt(u.ink0a.xy, u, pal);
+            tone = u.ink0b.w;
         } else if (a1 >= a2) {
             under = sheetAt(u.ink1a.xy, u, pal);
+            tone = u.ink1b.w;
         } else {
             float2 w = toWorld(float2(u.ink2a.x / aspect, u.ink2a.y), u);
             under = sheetAt(float2(w.x * aspect, w.y), u, pal);
+            tone = u.ink2b.w;
         }
-        return float4(inkColor(under, pal), a);
+        return float4(toneColor(tone, under, pal), a);
     }
 
     float3 paperSample(float2 suv, constant Uniforms &u, constant float4 *pal,
@@ -486,7 +497,7 @@ enum Shaders {
             if (ink > 0.001) {
                 // One ink colour per line, chosen against the background at its centre.
                 float3 under = flatBackground(background, inkCentre(wuv, uv, u, ink0, ink1, ink2), u, pal);
-                base = mix(base, inkColor(under, pal), ink * 0.92);
+                base = mix(base, toneColor(u.style.w, under, pal), ink * 0.92);
             }
         }
         // The receding side of a tilted plane falls into shadow; the near side lifts a touch.

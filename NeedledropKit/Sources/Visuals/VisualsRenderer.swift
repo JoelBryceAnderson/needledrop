@@ -171,7 +171,12 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         var revealedWords: Double?
         /// The caption's centre on screen (scene units), chosen clear of the cover.
         var screenCentre: SIMD2<Double>?
+        /// Dark (1) or light (2) ink, chosen once against the background where it's set.
+        var tone: Float = 0
     }
+
+    /// The background being drawn (set each frame before text is placed).
+    private var currentBackground: LookStyle.Background = .paper
 
     /// The fold composition morphs between moves: from `composition - 1` to `composition` as
     /// the shot's move progresses. Folds wander on a clock that runs only while moving.
@@ -317,6 +322,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         let current = slots.first
         let aspect = Double(width) / Double(height)
         let (pipeline, background) = scenePipelineAndBackground(style)
+        currentBackground = background
         // The shot: where the cover is and how the camera looks at the background. With timed
         // lyrics it holds still while a line is up and moves only in the gaps between lines.
         var shotInput = Choreographer.Input(
@@ -341,7 +347,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         case .googie: 2
         case .custom: 3
         }
-        uniforms.style = SIMD4(backgroundIndex, Float(shot.cover.x), Float(shot.cover.size), 0)
+        uniforms.style = SIMD4(backgroundIndex, Float(shot.cover.x), Float(shot.cover.size), flatTone)
         let coverIndex: Float = switch coverModeOverride ?? style.coverMode {
         case .living: 0
         case .dissolve: 1
@@ -468,8 +474,10 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                                                    fontSize: fontSize, maxWidth: CGFloat(Double(sceneHeight) * room * 2)),
                let tex = texture(image) {
                 let size = SIMD2(Double(image.width), Double(image.height)) / (2 * Double(sceneHeight))
+                let corner = captionCorner(size: size, aspect: layout.aspect, hasArt: hasArt)
+                let onPaper = shot.targetCamera.world(of: corner, aspect: layout.aspect) ?? corner
                 captionSlot = PrintedSlot(id: 0, captionID: caption.id, texture: tex, size: size, spot: nil, enteredAt: time,
-                                          screenCentre: captionCorner(size: size, aspect: layout.aspect, hasArt: hasArt))
+                                          screenCentre: corner, tone: tone(at: onPaper, layout: layout))
             }
         } else if input.caption == nil, let caption = captionSlot, caption.exitedAt == nil {
             captionSlot?.exitedAt = time
@@ -493,7 +501,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                                                      allowed: test) else { continue }
                         lyricSlots.append(PrintedSlot(id: lyric.id, captionID: nil, texture: text.texture, size: text.size,
                                                       spot: spot, enteredAt: time,
-                                                      words: LyricRasterizer.wordRanges(lyric.text).count))
+                                                      words: LyricRasterizer.wordRanges(lyric.text).count,
+                                                      tone: tone(at: layout.frame(for: spot, size: text.size).centre, layout: layout)))
                         break placing
                     }
                 }
@@ -505,6 +514,30 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         }
         lyricSlots.removeAll { slot in slot.exitedAt.map { time - $0 > Self.inkOut } ?? false }
         if lyricSlots.count > 2 { lyricSlots.removeFirst(lyricSlots.count - 2) }
+    }
+
+    /// Dark or light ink for text set at `p` (background scene units): against the lit fold it
+    /// sits on (paper), or the background's overall lightness. Chosen once, so it never flickers.
+    private func tone(at p: SIMD2<Double>, layout: FoldLayout) -> Float {
+        guard currentBackground == .paper else { return flatTone }
+        let palette = (slots.first?.look.palette ?? .neutral).colors.sorted { $0.luminance < $1.luminance }
+        let k = layout.strip(at: p)
+        let base = k == 1 ? palette[4] : palette[3]
+        let colour = SIMD3(Double(max(base.r, 0.12)), Double(max(base.g, 0.12)), Double(max(base.b, 0.12)))
+        let m = layout.creases.first?.normal ?? SIMD2(0, 1)
+        let sgn = k % 2 == 0 ? 1.0 : -1.0
+        let n = simd_normalize(SIMD3(m.x * sin(layout.tilt) * sgn, m.y * sin(layout.tilt) * sgn, cos(layout.tilt)))
+        let lit = 0.38 + 0.85 * max(0, simd_dot(n, layout.light))
+        let lum = simd_dot(colour * lit, SIMD3(0.2126, 0.7152, 0.0722))
+        return lum > 0.4 ? 1 : 2
+    }
+
+    /// Ink for the flat backgrounds, from how light the album's colours are overall.
+    private var flatTone: Float {
+        if currentBackground == .googie { return 1 }  // cream ground
+        let colours = (slots.first?.look.palette ?? .neutral).colors
+        let mean = colours.reduce(Float(0)) { $0 + $1.luminance } / Float(max(1, colours.count))
+        return mean > 0.45 ? 1 : 2
     }
 
     /// Where a line sits: along its crease, wherever the crease is now.
@@ -557,7 +590,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             guard let slot, let f = slotFrame(slot, layout: layout) else { return (.zero, .zero) }
             let o = slotOpacity(slot, time: time)
             return (SIMD4(Float(f.centre.x), Float(f.centre.y), Float(slot.size.x / 2), Float(slot.size.y / 2)),
-                    SIMD4(Float(f.angle), Float(o), blur(o, exiting: slot.exitedAt != nil), 0))
+                    SIMD4(Float(f.angle), Float(o), blur(o, exiting: slot.exitedAt != nil), slot.tone))
         }
         let newest = lyricSlots.last
         let older = lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2] : nil
@@ -573,7 +606,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             let f = captionFrame(caption, aspect: layout.aspect)
             let o = captionOpacity(caption, time: time)
             uniforms.ink2a = SIMD4(Float(f.centre.x), Float(f.centre.y), Float(f.size.x / 2), Float(f.size.y / 2))
-            uniforms.ink2b = SIMD4(0, Float(o), blur(o, exiting: time > caption.enteredAt + Self.inkIn), 0)
+            uniforms.ink2b = SIMD4(0, Float(o), blur(o, exiting: time > caption.enteredAt + Self.inkIn), caption.tone)
         }
         for (i, c) in layout.creases.prefix(FoldLayout.maximumCreases).enumerated() {
             let crease = Self.crease(c)
