@@ -1,5 +1,6 @@
 import AudioCapture
 import Foundation
+import Recognition
 import SessionState
 import SignalAnalysis
 import Synchronization
@@ -7,6 +8,11 @@ import Synchronization
 public enum PipelineEvent: Sendable, Equatable {
     case source(SourceStatus)
     case side(SideEvent)
+    /// Every `tickInterval` of audio: lets session logic run on audio time, so replay at
+    /// any speed behaves identically.
+    case tick(time: Double, phase: SidePhase)
+    /// Posted by observers (recognition) so everything arrives on one ordered stream.
+    case recognition(RecognitionEvent)
 }
 
 /// Everything the UI needs for one frame. The renderer pulls this at display rate via
@@ -39,7 +45,11 @@ public struct PipelineSnapshot: Sendable {
 /// Drains the ring buffer on a dedicated thread, runs `AnalysisCore`, and publishes a
 /// snapshot plus an event stream. The capture thread only ever touches the ring buffer.
 public final class ListeningPipeline: @unchecked Sendable {
+    public static let tickInterval = 0.25
+
     public let events: AsyncStream<PipelineEvent>
+    /// Receives every analysed hop on the analysis thread (recognition, archive).
+    public let observer: (any AudioObserver)?
 
     private let ring = AudioRingBuffer(channelCount: 2, minimumCapacity: 1 << 20)  // ~21 s at 48 kHz
     private let continuation: AsyncStream<PipelineEvent>.Continuation
@@ -47,6 +57,7 @@ public final class ListeningPipeline: @unchecked Sendable {
     private let pendingFormat = Mutex<CaptureFormat?>(nil)
     private let pendingConfig = Mutex<SideDetectorConfig?>(nil)
     private let running = Atomic<Bool>(false)
+    private let sourceFinished = Atomic<Bool>(false)
     private var source: (any AudioSource)?
     private var thread: Thread?
 
@@ -55,20 +66,28 @@ public final class ListeningPipeline: @unchecked Sendable {
     private var config: SideDetectorConfig
     private var working = PipelineSnapshot()
     private var historyAccumulator = 0.0
+    private var nextTick = 0.0
 
-    public init(config: SideDetectorConfig = SideDetectorConfig()) {
+    public init(config: SideDetectorConfig = SideDetectorConfig(), observer: (any AudioObserver)? = nil) {
         self.config = config
+        self.observer = observer
         var initial = PipelineSnapshot()
         initial.config = config
         working = initial
         shared = Mutex(initial)
-        (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(256))
+        (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
     }
 
     deinit { stop() }
 
     public func snapshot() -> PipelineSnapshot {
         shared.withLock { $0 }
+    }
+
+    /// Adds an event to the stream, in order with the pipeline's own events when called
+    /// from the analysis thread.
+    public func post(_ event: PipelineEvent) {
+        continuation.yield(event)
     }
 
     public func updateConfig(_ config: SideDetectorConfig) {
@@ -107,7 +126,12 @@ public final class ListeningPipeline: @unchecked Sendable {
             pendingFormat.withLock { $0 = format }
         }
         shared.withLock { $0.sourceStatus = status }
-        continuation.yield(.source(status))
+        if status == .finished {
+            // Reported by the analysis thread once everything buffered has been analysed.
+            sourceFinished.store(true, ordering: .releasing)
+        } else {
+            continuation.yield(.source(status))
+        }
     }
 
     // MARK: - Analysis thread
@@ -138,10 +162,15 @@ public final class ListeningPipeline: @unchecked Sendable {
                 scratchSize = hop
             }
             guard let buffer = scratch, ring.read(frameCount: hop, into: buffer) else {
+                if sourceFinished.exchange(false, ordering: .acquiringAndReleasing) {
+                    continuation.yield(.source(.finished))
+                }
                 Thread.sleep(forTimeInterval: 0.003)
                 continue
             }
             let (features, sideEvents) = core.process(left: buffer, right: buffer + hop)
+            observer?.observe(left: buffer, right: buffer + hop, frameCount: hop,
+                              endTime: features.time, sampleRate: core.parameters.sampleRate)
             publish(features, sideEvents, core: core)
         }
     }
@@ -155,6 +184,7 @@ public final class ListeningPipeline: @unchecked Sendable {
         }
         let core = AnalysisCore(sampleRate: format.sampleRate, config: config)
         self.core = core
+        nextTick = 0
         working.format = format
         working.phase = core.detector.phase
     }
@@ -188,6 +218,10 @@ public final class ListeningPipeline: @unchecked Sendable {
             working.recentEvents.append(event)
             if working.recentEvents.count > 20 { working.recentEvents.removeFirst() }
             continuation.yield(.side(event))
+        }
+        if features.time >= nextTick {
+            nextTick = features.time + Self.tickInterval
+            continuation.yield(.tick(time: features.time, phase: core.detector.phase))
         }
         let snapshot = working
         shared.withLock { current in

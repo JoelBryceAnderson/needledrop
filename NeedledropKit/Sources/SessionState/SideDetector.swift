@@ -62,12 +62,16 @@ public enum SideEndReason: String, Sendable, Codable {
 
 public enum SideEvent: Sendable, Equatable {
     case sideStarted(at: Double)
+    /// Quiet has lasted `gapMinimum`: probably between tracks. `at` is when it went quiet.
+    case gapStarted(at: Double)
+    /// Music resumed after a gap.
     case trackGap(start: Double, end: Double, abrupt: Bool)
     case sideEnded(start: Double, end: Double, reason: SideEndReason)
 
     public var time: Double {
         switch self {
         case .sideStarted(let t): t
+        case .gapStarted(let t): t
         case .trackGap(_, let end, _): end
         case .sideEnded(_, let end, _): end
         }
@@ -102,6 +106,7 @@ public struct SideDetector: Sendable {
     private var quietIsAbrupt = false
     private var resumeSince: Double?
     private var floorSince: Double?
+    private var gapAnnounced = false
 
     public init(config: SideDetectorConfig = SideDetectorConfig()) {
         self.config = config
@@ -143,6 +148,7 @@ public struct SideDetector: Sendable {
                 quietIsAbrupt = t - lastLoud <= config.needleLiftWindow + config.smoothingWindow
                 resumeSince = nil
                 floorSince = nil
+                gapAnnounced = false
             }
 
         case .quiet(let sideStart, let since):
@@ -150,7 +156,7 @@ public struct SideDetector: Sendable {
                 let resumedAt = resumeSince ?? t
                 resumeSince = resumedAt
                 if t - resumedAt >= config.resumeHold {
-                    if resumedAt - since >= config.gapMinimum {
+                    if gapAnnounced {
                         events.append(.trackGap(start: since, end: resumedAt, abrupt: quietIsAbrupt))
                     }
                     phase = .playing(sideStart: sideStart)
@@ -158,6 +164,10 @@ public struct SideDetector: Sendable {
                 break
             }
             resumeSince = nil
+            if !gapAnnounced, t - since >= config.gapMinimum {
+                gapAnnounced = true
+                events.append(.gapStarted(at: since))
+            }
             if gatedLevelDB < config.needleLiftFloorDB {
                 floorSince = floorSince ?? t
             } else {

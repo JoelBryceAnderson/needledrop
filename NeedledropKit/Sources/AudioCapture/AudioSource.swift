@@ -54,3 +54,11 @@ public enum MicrophoneAccess {
         }
     }
 }
+
+/// Gets the analysed PCM, hop by hop, on the analysis thread (never the capture thread).
+/// Recognition and, later, the archive hang off this. Implementations must not block.
+public protocol AudioObserver: AnyObject, Sendable {
+    /// `endTime` is the audio time (seconds) at the end of this block.
+    func observe(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frameCount: Int,
+                 endTime: Double, sampleRate: Double)
+}

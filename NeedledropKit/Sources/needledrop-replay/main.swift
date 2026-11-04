@@ -60,6 +60,8 @@ func describe(_ event: SideEvent) -> String {
     switch event {
     case .sideStarted(let t):
         "\(clock(t))  ▶ side started"
+    case .gapStarted(let t):
+        "\(clock(t))  … quiet"
     case .trackGap(let start, let end, let abrupt):
         "\(clock(start))  ‖ gap \(String(format: "%.1f", end - start)) s → next track at \(clock(end))\(abrupt ? " (abrupt stop)" : "")"
     case .sideEnded(let start, let end, let reason):
@@ -101,6 +103,7 @@ func runLive(source: any AudioSource, config: SideDetectorConfig, stopWhenFinish
             case .source(.waitingForDevice(let what)): print("\r\u{1B}[K… waiting for \(what)")
             case .source(.failed(let message)): print("\r\u{1B}[K✖ \(message)")
             case .source(.finished): if stopWhenFinished { return }
+            case .tick, .recognition: break
             }
         }
     }
@@ -170,11 +173,19 @@ case "synth":
     guard let path = arguments.first else { fail("synth needs an output path") }
     var side = SyntheticSide.demo(sampleRate: sampleRate)
     side.seed = seed
-    let truth = try side.write(to: URL(fileURLWithPath: path))
+    let url = URL(fileURLWithPath: path)
+    let truth = try side.write(to: url)
     print("wrote \(path): \(clock(truth.duration)), \(Int(sampleRate)) Hz, 24-bit stereo")
     for (i, t) in truth.tracks.enumerated() {
         print(String(format: "  track %d  %@ – %@  %.0f BPM", i + 1, clock(t.start), clock(t.end), t.bpm))
     }
+    // Stand-in identities so replay in the app shows real metadata and artwork.
+    let names = [("Dreams", "Fleetwood Mac"), ("Go Your Own Way", "Fleetwood Mac"), ("Songbird", "Fleetwood Mac")]
+    let script = ReplayScript(tracks: zip(truth.tracks, names.cycled(truth.tracks.count)).map { t, n in
+        .init(start: t.start, end: t.end, title: n.0, artist: n.1, offset: 30, rate: 1.003)
+    })
+    try script.write(for: url)
+    print("wrote \(ReplayScript.sidecarURL(for: url).lastPathComponent) (scripted recognition for replay)")
 
 case "devices":
     let defaultUID = AudioDeviceCatalog.defaultInputDevice()?.uid
@@ -192,4 +203,10 @@ case "listen":
 default:
     print(usage)
     exit(1)
+}
+
+extension Array {
+    func cycled(_ count: Int) -> [Element] {
+        (0..<count).map { self[$0 % self.count] }
+    }
 }

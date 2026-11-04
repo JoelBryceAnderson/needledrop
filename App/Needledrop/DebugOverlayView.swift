@@ -1,4 +1,6 @@
+import Metadata
 import Pipeline
+import Recognition
 import SessionState
 import SignalAnalysis
 import SwiftUI
@@ -11,9 +13,11 @@ struct DebugOverlayView: View {
     var body: some View {
         TimelineView(.animation) { _ in
             let snapshot = model.pipeline.snapshot()
+            let session = model.engine.session()
             GeometryReader { geometry in
                 let u = min(geometry.size.width / 64, geometry.size.height / 40)
-                OverlayLayout(snapshot: snapshot, log: model.log, u: u)
+                OverlayLayout(snapshot: snapshot, session: session, metadata: model.metadata,
+                              artwork: model.artwork, log: model.log, u: u)
                     .padding(u * 2)
                     .frame(width: geometry.size.width, height: geometry.size.height)
             }
@@ -31,6 +35,9 @@ struct DebugOverlayView: View {
 
 private struct OverlayLayout: View {
     let snapshot: PipelineSnapshot
+    let session: SessionSnapshot
+    let metadata: TrackMetadata?
+    let artwork: NSImage?
     let log: [LogEntry]
     let u: CGFloat
 
@@ -40,24 +47,28 @@ private struct OverlayLayout: View {
             Text(sourceLine)
                 .font(.system(size: u * 1.4, weight: .medium, design: .rounded))
                 .foregroundStyle(snapshot.droppedFrames > 0 ? .red : .gray)
-            SpectrumBars(spectrum: snapshot.spectrum)
-                .frame(maxHeight: .infinity)
+            HStack(spacing: u * 2) {
+                NowPlayingCard(session: session, metadata: metadata, artwork: artwork,
+                               now: snapshot.features.time, u: u)
+                SpectrumBars(spectrum: snapshot.spectrum)
+            }
+            .frame(maxHeight: .infinity)
             HStack(alignment: .bottom, spacing: u * 2) {
                 BandMeters(bands: snapshot.features.bands, u: u)
                 LevelMeter(snapshot: snapshot, u: u)
                     .frame(width: u * 18)
             }
-            .frame(height: u * 7)
+            .frame(height: u * 4.5)
             LevelHistory(snapshot: snapshot, u: u)
-                .frame(height: u * 7)
+                .frame(height: u * 4.5)
             VStack(alignment: .leading, spacing: u * 0.2) {
-                ForEach(log.suffix(3)) { entry in
+                ForEach(log.suffix(2)) { entry in
                     Text(entry.text).lineLimit(1)
                 }
             }
             .font(.system(size: u * 1.3, weight: .medium, design: .rounded))
             .foregroundStyle(.gray)
-            .frame(height: u * 4.5, alignment: .bottom)
+            .frame(height: u * 3, alignment: .bottom)
         }
     }
 
@@ -89,23 +100,109 @@ private struct OverlayLayout: View {
 
     private var phaseText: (label: String, color: Color) {
         let now = snapshot.features.time
-        switch snapshot.phase {
+        let elapsed = session.clock.map { formatDuration($0.position(at: now)) } ?? ""
+        switch session.phase {
         case .idle:
-            if case .sideEnded(_, let end, _)? = snapshot.recentEvents.last, now - end < 20 {
-                return ("SIDE COMPLETE — FLIP IT", .orange)
-            }
             return ("WAITING FOR NEEDLE", .gray)
-        case .arming:
+        case .listening:
             return ("LISTENING…", .yellow)
-        case .playing(let start):
-            return ("SIDE PLAYING  \(formatDuration(now - start))", .green)
-        case .quiet(let start, let since):
-            let quiet = now - snapshot.config.smoothingWindow / 2 - since
-            if quiet >= snapshot.config.gapMinimum {
-                return (String(format: "BETWEEN TRACKS  %.0f s", quiet), .cyan)
-            }
-            return ("SIDE PLAYING  \(formatDuration(now - start))", .green)
+        case .recognizing:
+            return ("RECOGNIZING…", .yellow)
+        case .playing:
+            return session.unidentified ? ("PLAYING  ·  UNKNOWN", .green) : ("PLAYING  \(elapsed)", .green)
+        case .betweenTracks:
+            return ("BETWEEN TRACKS", .cyan)
+        case .sideEnded:
+            return ("SIDE COMPLETE — FLIP IT", .orange)
         }
+    }
+}
+
+/// Artwork, title/artist/album, and the playback clock with its confidence.
+private struct NowPlayingCard: View {
+    let session: SessionSnapshot
+    let metadata: TrackMetadata?
+    let artwork: NSImage?
+    let now: Double
+    let u: CGFloat
+
+    var body: some View {
+        HStack(alignment: .top, spacing: u * 1.5) {
+            ZStack {
+                RoundedRectangle(cornerRadius: u * 0.6).fill(Color.white.opacity(0.08))
+                if let artwork {
+                    Image(nsImage: artwork).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: session.isRecognizing ? "waveform" : "record.circle")
+                        .font(.system(size: u * 5))
+                        .foregroundStyle(.gray)
+                }
+            }
+            .frame(width: u * 12, height: u * 12)
+            .clipShape(RoundedRectangle(cornerRadius: u * 0.6))
+
+            VStack(alignment: .leading, spacing: u * 0.5) {
+                Text(title)
+                    .font(.system(size: u * 2.2, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.white)
+                Text(session.track?.artist ?? " ")
+                    .font(.system(size: u * 1.7, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.8))
+                Text(albumLine)
+                    .font(.system(size: u * 1.4, weight: .medium, design: .rounded))
+                    .foregroundStyle(.gray)
+                Spacer(minLength: 0)
+                if let clock = session.clock {
+                    progress(clock)
+                    Text(clockLine(clock))
+                        .font(.system(size: u * 1.2, weight: .medium, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.gray)
+                }
+            }
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(width: u * 36, height: u * 12)
+    }
+
+    private var title: String {
+        if let track = session.track { return track.title }
+        if session.unidentified { return "Unknown record" }
+        return session.isRecognizing ? "Listening…" : " "
+    }
+
+    private var albumLine: String {
+        guard let metadata else { return " " }
+        var parts: [String] = []
+        if let album = metadata.album { parts.append(album) }
+        if let year = metadata.year { parts.append(String(year)) }
+        if let n = metadata.trackNumber {
+            parts.append(metadata.trackCount.map { "track \(n)/\($0)" } ?? "track \(n)")
+        }
+        return parts.joined(separator: "  ·  ")
+    }
+
+    private func progress(_ clock: PlaybackClock) -> some View {
+        let position = clock.position(at: now)
+        let fraction = metadata?.duration.map { min(1, max(0, position / $0)) }
+        return VStack(alignment: .leading, spacing: u * 0.3) {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.12))
+                    Capsule().fill(Color.white).frame(width: g.size.width * (fraction ?? 0))
+                }
+            }
+            .frame(height: u * 0.6)
+            Text("\(formatDuration(position)) / \(metadata?.duration.map(formatDuration) ?? "–:––")")
+                .font(.system(size: u * 1.4, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(.white)
+        }
+    }
+
+    private func clockLine(_ clock: PlaybackClock) -> String {
+        let confidence = Int((clock.confidence(at: now) * 100).rounded())
+        let speed = (clock.rate - 1) * 100
+        return String(format: "sync %d%%  ·  speed %+.2f%%  ·  ×%d", confidence, speed, session.matchCount)
     }
 }
 

@@ -94,6 +94,8 @@ private struct Script {
         #expect(abs(start - 10) < 0.05 && abs(end - 13) < 0.05)
         #expect(abrupt)  // -20 → -60 in one hop
         #expect(s.ends.isEmpty)
+        let gapStarts = s.events.compactMap { if case .gapStarted(let t) = $0 { t } else { nil } }
+        #expect(gapStarts.count == 1 && abs(gapStarts[0] - 10) < 0.05)
     }
 
     @Test func sustainedRunoutEndsTheSide() {
