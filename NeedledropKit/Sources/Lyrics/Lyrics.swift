@@ -27,10 +27,10 @@ public struct LyricCue: Sendable, Equatable {
         return min(end, start + min(6, max(1.2, Double(syllables) * 0.2)))
     }
 
-    /// How long the line stays printed: a beat past its singing (at least 2.5 s), not to
+    /// How long the line stays printed: a moment past its singing (at least 2.2 s), not to
     /// the next line. That leaves gaps between phrases for the picture to move in.
     public var shownUntil: Double {
-        min(end, max(start + 2.5, sungEnd + 1.2))
+        min(end, max(start + 2.2, sungEnd + 0.8))
     }
 }
 

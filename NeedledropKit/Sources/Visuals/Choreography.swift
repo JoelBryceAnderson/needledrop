@@ -182,12 +182,12 @@ public struct Choreographer: Sendable {
 
     /// 0 = still (the cover only steps aside for lyrics), 1 = full choreography.
     public var motion = 1.0
-    /// Beats per phrase (8 bars of 4/4).
-    public var phraseBeats = 32
+    /// Beats per shot without timed lyrics (4 bars of 4/4).
+    public var phraseBeats = 16
     /// Phrase length when no beat is tracked.
-    public var phraseSeconds = 16.0
+    public var phraseSeconds = 8.0
     /// Shortest gap between cuts, so a busy passage can't turn into flicker.
-    public var minimumShot = 6.0
+    public var minimumShot = 4.0
 
     public private(set) var cuts = 0
     private var from: Shot
@@ -210,8 +210,8 @@ public struct Choreographer: Sendable {
     private var pendingRecompose = false
     private var movedThisGap = false
     /// The shortest gap worth moving in, and how long before the next line a move settles.
-    public var minimumGap = 1.0
-    public var settleBefore = 0.4
+    public var minimumGap = 0.6
+    public var settleBefore = 0.3
     private var driftAmount = 0.0
     /// When the current track started: energy needs some history before it means anything.
     private var trackStart = 0.0
@@ -264,9 +264,9 @@ public struct Choreographer: Sendable {
             // the next one (a long instrumental gap may get more than one).
             if !input.lineShowing, settledNow, let window = input.nextLineIn, window >= minimumGap,
                motion > 0 || pendingRecompose,
-               pendingRecompose || !movedThisGap || (window >= 6 && input.time - transitionStart - transitionLength >= 3) {
+               pendingRecompose || !movedThisGap || (window >= 2.5 && input.time - transitionStart - transitionLength >= 1.5) {
                 cut(at: input.time, establishing: false, tempo: input.tempo,
-                    length: min(4, max(0.8, window - settleBefore)))
+                    length: min(3.5, max(0.5, window - settleBefore)))
                 movedThisGap = true
                 pendingRecompose = false
             }

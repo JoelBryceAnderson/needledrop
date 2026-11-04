@@ -88,9 +88,9 @@ struct ChoreographerTests {
         play(&c, seconds: 70) { t, frame in
             if frame.cuts != lastCuts { cutTimes.append(t); lastCuts = frame.cuts }
         }
-        // The establishing shot at the start, then every 32 beats (16 s at 120 BPM).
-        #expect(cutTimes.count == 5)
-        for (a, b) in zip(cutTimes, cutTimes.dropFirst()) { #expect(abs((b - a) - 16) < 0.2) }
+        // The establishing shot at the start, then every 16 beats (8 s at 120 BPM).
+        #expect(cutTimes.count == 9)
+        for (a, b) in zip(cutTimes, cutTimes.dropFirst()) { #expect(abs((b - a) - 8) < 0.2) }
     }
 
     @Test func aDropCutsEarly() {
