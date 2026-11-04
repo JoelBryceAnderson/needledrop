@@ -17,7 +17,8 @@ struct DebugOverlayView: View {
             GeometryReader { geometry in
                 let u = min(geometry.size.width / 64, geometry.size.height / 40)
                 OverlayLayout(snapshot: snapshot, session: session, metadata: model.metadata,
-                              artwork: model.artwork, recording: model.engine.isRecording, log: model.log, u: u)
+                              artwork: model.artwork, recording: model.engine.isRecording, log: model.log,
+                              scoreStatus: model.scoreStatus, u: u)
                     .padding(u * 2)
                     .frame(width: geometry.size.width, height: geometry.size.height)
             }
@@ -33,6 +34,7 @@ private struct OverlayLayout: View {
     let artwork: NSImage?
     let recording: Bool
     let log: [LogEntry]
+    let scoreStatus: String
     let u: CGFloat
 
     var body: some View {
@@ -43,7 +45,7 @@ private struct OverlayLayout: View {
                 .foregroundStyle(snapshot.droppedFrames > 0 ? .red : .gray)
             HStack(spacing: u * 2) {
                 NowPlayingCard(session: session, metadata: metadata, artwork: artwork,
-                               now: snapshot.features.time, u: u)
+                               now: snapshot.features.time, scoreStatus: scoreStatus, u: u)
                 SpectrumBars(spectrum: snapshot.spectrum)
             }
             .frame(maxHeight: .infinity)
@@ -124,6 +126,7 @@ private struct NowPlayingCard: View {
     let metadata: TrackMetadata?
     let artwork: NSImage?
     let now: Double
+    let scoreStatus: String
     let u: CGFloat
 
     var body: some View {
@@ -196,6 +199,10 @@ private struct NowPlayingCard: View {
             Text("\(formatDuration(position)) / \(metadata?.duration.map(formatDuration) ?? "–:––")")
                 .font(.system(size: u * 1.4, weight: .bold, design: .rounded).monospacedDigit())
                 .foregroundStyle(.white)
+            Text("Score: \(scoreStatus)")
+                .font(.system(size: u * 1.1, design: .rounded))
+                .foregroundStyle(.white.opacity(0.7))
+                .lineLimit(2)
         }
     }
 

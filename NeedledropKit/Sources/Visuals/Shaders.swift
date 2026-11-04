@@ -33,7 +33,7 @@ enum Shaders {
         float4 ink2b;
         float4 inkWords; // typewriter: words in slot 0, words shown in slot 0, same for slot 1
         float4 crease[4]; // normal.xy, offset (dot(q, normal) > offset = past it), active
-        float4 fold;    // tilt (radians), accent strip, unused, unused
+        float4 fold;    // tilt (radians), accent strip, palette swap 0…1, palette mute 0…1
         float4 cover;   // mode (0 living, 1 dissolve, 2 record), dissolve amount, record angle, side progress
         float4 scene;   // wind-down (0…1), cover centre y (uv), cover rotation (radians), cover visibility
         float4 light;   // xyz
@@ -228,6 +228,14 @@ enum Shaders {
         float tilt = u.fold.x;
         float3 sheet = max(pal[3].rgb, float3(0.12));
         float3 accent = max(pal[4].rgb, float3(0.12));
+        // The score's palette moves: swap the two (fold.z), drain the colour (fold.w).
+        float3 swapped = mix(sheet, accent, u.fold.z);
+        accent = mix(accent, sheet, u.fold.z);
+        sheet = swapped;
+        float3 greyS = float3(dot(sheet, float3(0.2126, 0.7152, 0.0722)));
+        float3 greyA = float3(dot(accent, float3(0.2126, 0.7152, 0.0722)));
+        sheet = mix(sheet, greyS, u.fold.w * 0.75);
+        accent = mix(accent, greyA, u.fold.w * 0.75);
         float2 m = u.crease[0].xy;  // the creases run (nearly) parallel
         int k = stripAt(q, u);
         float sgn = (k & 1) == 0 ? 1.0 : -1.0;

@@ -41,7 +41,7 @@ let package = Package(
         .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Archive"]),
         // Feed recorded/synthetic audio through the pipeline as if it were live.
         .target(name: "ReplayHarness", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Pipeline"]),
-        .executableTarget(name: "needledrop-replay", dependencies: ["ReplayHarness", "Pipeline", "AudioCapture", "Visuals"]),
+        .executableTarget(name: "needledrop-replay", dependencies: ["ReplayHarness", "Pipeline", "AudioCapture", "Visuals", "Lyrics", "ArtDirector"]),
 
         .testTarget(name: "AudioCaptureTests", dependencies: ["AudioCapture"]),
         .testTarget(name: "SignalAnalysisTests", dependencies: ["SignalAnalysis", "ReplayHarness"]),

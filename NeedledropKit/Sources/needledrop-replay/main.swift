@@ -8,6 +8,18 @@ import ImageIO
 import Metal
 import UniformTypeIdentifiers
 import Visuals
+import Lyrics
+import ArtDirector
+
+/// An .lrc file as lyrics and as the visuals' timeline (as the app builds it).
+func loadLyrics(_ path: String) throws -> (Lyrics, LyricTimeline) {
+    let lyrics = Lyrics(lines: LRCParser.parse(try String(contentsOfFile: path, encoding: .utf8)))
+    let lines = lyrics.lines.indices.compactMap { i -> LyricTimeline.Line? in
+        guard !lyrics.lines[i].text.isEmpty, let cue = lyrics.cue(at: lyrics.lines[i].time), cue.index == i else { return nil }
+        return LyricTimeline.Line(index: i, start: cue.start, shownUntil: cue.shownUntil, heldUntil: cue.end, text: cue.text)
+    }
+    return (lyrics, LyricTimeline(lines: lines))
+}
 
 let usage = """
     needledrop-replay — run audio through the Needledrop pipeline without a turntable.
@@ -22,6 +34,9 @@ let usage = """
                                [--cover living|dissolve|record] [--reveal WORDS] [--progress 0-1] [--side-ended]
                                [--seconds S] [--size WxH] [--motion 0…1] [--at t1,t2,…]
                                (--lyric "a/b/c" cycles lines every 4 s; --at saves out-<t>.png at each time)
+                               [--lrc song.lrc [--score score.json]]  (real lyric timing, and a track score)
+      needledrop-replay score-check <song.lrc> <score.json>   Dry-run a track score against the lyrics
+      needledrop-replay score-prompt <song.lrc> [--artist A] [--title T]   What Claude is sent to score it
                                                    Render visuals offscreen with synthetic music
       needledrop-replay validate-shader <body.metal>
                                                    Run a custom-scene body through the art-director sandbox
@@ -241,6 +256,8 @@ case "still":
     let motion = option("--motion").flatMap(Double.init)
     let snapshots = option("--at")?.split(separator: ",").compactMap { Double($0) } ?? []
     let lyricLines = lyricText?.split(separator: "/").map { $0.trimmingCharacters(in: .whitespaces) } ?? []
+    let lrc = try option("--lrc").map(loadLyrics)
+    let score = try option("--score").map { try JSONDecoder().decode(TrackScore.self, from: Data(contentsOf: URL(fileURLWithPath: $0))) }
     let sideEnded = arguments.contains("--side-ended")
     arguments.removeAll { $0 == "--side-ended" }
     guard let path = arguments.first, size.count == 2 else { fail("still needs an output path (and --size WxH)") }
@@ -305,6 +322,18 @@ case "still":
         // Cycling lines: each is up 2.8 s of every 4, leaving a gap before the next.
         if lyricLines.count > 1 { input.nextLyricIn = 4 - t.truncatingRemainder(dividingBy: 4) }
         input.lyricsAvailable = !lyricLines.isEmpty
+        if let (lyrics, timeline) = lrc {
+            // The song's own timing: the position is the frame time.
+            renderer.score = score?.sanitized(for: timeline)
+            input.lyricsAvailable = true
+            input.nextLyricIn = lyrics.nextLineStart(after: t).map { $0 - t }
+            input.nextLyricIndex = lyrics.nextLineIndex(after: t)
+            input.lyric = nil
+            if let cue = lyrics.cue(at: t),
+               t < ((renderer.score?.treatment(line: cue.index)?.hold ?? false) ? cue.end : cue.shownUntil) {
+                input.lyric = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
+            }
+        }
         renderer.render(to: target, input: input, time: t, commandBuffer: buffer)
         buffer.commit()
         await buffer.completed()
@@ -323,6 +352,23 @@ case "still":
     CGImageDestinationAddImage(destination, context.makeImage()!, nil)
     guard CGImageDestinationFinalize(destination) else { fail("couldn't write \(path)") }
     print("wrote \(path)")
+
+case "score-check":
+    guard arguments.count >= 2 else { fail("score-check needs <song.lrc> <score.json>") }
+    let (_, timeline) = try loadLyrics(arguments[0])
+    let raw = try JSONDecoder().decode(TrackScore.self, from: Data(contentsOf: URL(fileURLWithPath: arguments[1])))
+    let score = raw.sanitized(for: timeline)
+    let lost = (raw.keyframes.count - score.keyframes.count, raw.lines.count - score.lines.count)
+    if lost.0 > 0 || lost.1 > 0 { print("references that don't match these lyrics: \(lost.0) keyframes, \(lost.1) line treatments") }
+    let issues = ScoreChecker.check(score, timeline: timeline)
+    print("\(score.sections.count) sections, \(score.keyframes.count) keyframes, \(score.lines.count) line treatments")
+    if issues.isEmpty { print("✔ plays as written") } else { issues.forEach { print("✖ \($0.message)") } }
+
+case "score-prompt":
+    guard let path = arguments.first else { fail("score-prompt needs <song.lrc>") }
+    let (_, timeline) = try loadLyrics(path)
+    let brief = TrackBrief(artist: option("--artist") ?? "Unknown", title: option("--title") ?? "Untitled", timeline: timeline)
+    print(TrackDirector.prompt(brief))
 
 case "validate-shader":
     guard let path = arguments.first else { fail("validate-shader needs a file") }

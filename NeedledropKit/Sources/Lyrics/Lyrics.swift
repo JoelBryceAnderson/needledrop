@@ -64,6 +64,11 @@ public struct Lyrics: Sendable, Equatable, Codable {
         return LyricCue(index: index, text: line.text, start: line.time, end: end, next: upcoming)
     }
 
+    /// The index of the next line with words after `position`.
+    public func nextLineIndex(after position: Double) -> Int? {
+        lines.firstIndex { $0.time > position && !$0.text.isEmpty }
+    }
+
     /// When the next line with words starts after `position`.
     public func nextLineStart(after position: Double) -> Double? {
         lines.first { $0.time > position && !$0.text.isEmpty }?.time

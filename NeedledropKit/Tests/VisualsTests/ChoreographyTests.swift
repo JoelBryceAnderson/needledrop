@@ -178,3 +178,49 @@ struct TimedLyricsTests {
         #expect(movedInGaps > 100)
     }
 }
+
+@Suite("Choreographer following a score")
+struct ScoredChoreographyTests {
+    /// Lines every 4 s (up 2.8 s each); calls `body` with each frame and the next line's index.
+    func play(_ c: inout Choreographer, seconds: Double, _ body: (Double, Int, Choreographer.Frame) -> Void) {
+        var t = 0.0
+        while t < seconds {
+            let line = Int(t / 4)
+            var input = Choreographer.Input(time: t, level: 0.4, beatAge: t.truncatingRemainder(dividingBy: 0.5),
+                                            tempo: 120, lyrics: true, trackID: "a|song")
+            input.lineShowing = t.truncatingRemainder(dividingBy: 4) < 2.8
+            input.nextLineIn = 4 - t.truncatingRemainder(dividingBy: 4)
+            input.nextLineIndex = line + 1
+            body(t, line, c.update(input))
+            t += 1.0 / 30
+        }
+    }
+
+    @Test func aStillSectionHoldsAndAKeyframeLands() {
+        var c = Choreographer()
+        c.score = TrackScore(sections: [.init(startLine: 0, label: "verse", energy: .still),
+                                        .init(startLine: 4, label: "chorus", energy: .directed)],
+                             keyframes: [.init(beforeLine: 4, framing: .leanBack, intensity: 1, creases: 2, transition: .glide)])
+        var cutsBeforeChorus = 0
+        var chorus: Choreographer.Frame?
+        play(&c, seconds: 17.5) { t, line, frame in
+            if t > 1, t < 14 { cutsBeforeChorus = frame.cuts }
+            if line == 4, t.truncatingRemainder(dividingBy: 4) < 2.8 { chorus = frame }
+        }
+        #expect(cutsBeforeChorus == 1)  // just the establishing shot: the verse holds
+        #expect(chorus?.shot == "score:lean_back")
+        #expect((chorus?.camera.pitch ?? 0) > 0.4)
+        #expect(chorus?.directive?.creases == 2)
+    }
+
+    @Test func aKeyframeInAGapTooShortWaitsForTheNextOne() {
+        var c = Choreographer()
+        c.score = TrackScore(sections: [.init(startLine: 0, label: "verse", energy: .still)],
+                             keyframes: [.init(beforeLine: 2, framing: .turnLeft, intensity: 1, transition: .refold)])
+        // Gaps are 1.2 s: a refold needs 1.8 s with settling. It never fits here, so the
+        // picture holds rather than cramming it in.
+        var shots: Set<String> = []
+        play(&c, seconds: 20) { _, _, frame in shots.insert(frame.shot) }
+        #expect(!shots.contains("score:turn_left"))
+    }
+}

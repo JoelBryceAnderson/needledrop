@@ -29,7 +29,22 @@ enum MotionChoice: String, Codable, CaseIterable {
 
 struct ArtDirectorSettings: Codable, Equatable {
     var enabled = true
+    /// The album look (reads the cover, may write a shader).
     var model = ClaudeClient.defaultModel
+    /// Score each track from its lyrics (keyframes, sections, line treatments).
+    var scoreTracks = true
+    var scoreModel = TrackDirector.defaultModel
+
+    init() {}
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ArtDirectorSettings()
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? d.model
+        scoreTracks = try c.decodeIfPresent(Bool.self, forKey: .scoreTracks) ?? d.scoreTracks
+        scoreModel = try c.decodeIfPresent(String.self, forKey: .scoreModel) ?? d.scoreModel
+    }
 }
 
 enum InputSelection: Codable, Hashable {

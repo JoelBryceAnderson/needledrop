@@ -141,6 +141,8 @@ public struct Choreographer: Sendable {
         /// Seconds until the next lyric line (nil: no timed lyrics coming). Moves happen in
         /// the gaps and settle before it.
         public var nextLineIn: Double?
+        /// Which line that is (its index in the lyrics), to look up the track's score.
+        public var nextLineIndex: Int?
 
         public init(time: Double, level: Double = 0, beatAge: Double? = nil, tempo: Double? = nil, lyrics: Bool = false,
                     showCover: Bool = true, trackID: String? = nil, active: Bool = true) {
@@ -178,10 +180,21 @@ public struct Choreographer: Sendable {
         /// Which fold composition the move is heading to (0 = the album's own); the folds
         /// morph from the one before it as `progress` runs.
         public var composition: Int
+        /// The score's keyframe behind that composition (and the one before), if it had one:
+        /// crease count and angle, accent strip, palette move.
+        public var directive: TrackScore.Keyframe?
+        public var previousDirective: TrackScore.Keyframe?
     }
 
     /// 0 = still (the cover only steps aside for lyrics), 1 = full choreography.
     public var motion = 1.0
+    /// The plan for the track playing, written ahead with the whole lyric in view. Nil: the
+    /// built-in rules decide every move.
+    public var score: TrackScore?
+    /// A keyframe whose gap was too short, waiting for the next gap long enough.
+    private var pendingKeyframe: TrackScore.Keyframe?
+    /// Keyframes by the composition they started.
+    private var directives: [Int: TrackScore.Keyframe] = [:]
     /// Beats per shot without timed lyrics (4 bars of 4/4).
     public var phraseBeats = 16
     /// Phrase length when no beat is tracked.
@@ -263,11 +276,26 @@ public struct Choreographer: Sendable {
             // Still while a line is up; a move in the gap between lines, timed to settle before
             // the next one (a long instrumental gap may get more than one).
             if !input.lineShowing, settledNow, let window = input.nextLineIn, window >= minimumGap,
-               motion > 0 || pendingRecompose,
-               pendingRecompose || !movedThisGap || (window >= 2.5 && input.time - transitionStart - transitionLength >= 1.5) {
-                cut(at: input.time, establishing: false, tempo: input.tempo,
-                    length: min(3.5, max(0.5, window - settleBefore)))
-                movedThisGap = true
+               motion > 0 || pendingRecompose {
+                // The score's keyframe for this gap (or one held over from a gap too short).
+                let planned = input.nextLineIndex.flatMap { score?.keyframe(beforeLine: $0) }
+                let energy = input.nextLineIndex.flatMap { score?.section(atLine: $0)?.energy } ?? .directed
+                if let key = planned ?? pendingKeyframe, !movedThisGap || planned != nil {
+                    let needs = Self.gapNeeded(key.transition) + settleBefore
+                    if window >= needs {
+                        cut(at: input.time, establishing: false, tempo: input.tempo,
+                            length: Self.length(key.transition, window: window - settleBefore), planned: key)
+                        movedThisGap = true
+                        pendingKeyframe = nil
+                    } else if planned != nil {
+                        pendingKeyframe = key  // next gap that's long enough
+                    }
+                } else if pendingRecompose || (energy != .still &&
+                    (!movedThisGap || (window >= 2.5 && input.time - transitionStart - transitionLength >= 1.5))) {
+                    cut(at: input.time, establishing: false, tempo: input.tempo,
+                        length: min(3.5, max(0.5, window - settleBefore)), boldness: energy == .gentle ? 0.45 : 1)
+                    movedThisGap = true
+                }
                 pendingRecompose = false
             }
         } else if motion > 0, input.active {
@@ -299,17 +327,43 @@ public struct Choreographer: Sendable {
         if !showCover { cover.visibility = 0 }
         var target = to.cover
         if !showCover { target.visibility = 0 }
+        let composition = max(0, cuts - 1)
         return Frame(cover: cover, camera: camera, targetCover: target, targetCamera: to.camera, shot: to.name, cuts: cuts,
-                     moving: x < 1, progress: t, composition: max(0, cuts - 1))
+                     moving: x < 1, progress: t, composition: composition,
+                     directive: directives[composition], previousDirective: directives[composition - 1])
     }
 
-    private mutating func cut(at time: Double, establishing: Bool, tempo: Double?, length: Double? = nil) {
+    /// Gap a keyframe's transition needs, and how long it takes in a gap of `window`.
+    static func gapNeeded(_ transition: TrackScore.Transition) -> Double {
+        switch transition {
+        case .snap: 0.5
+        case .glide: 0.8
+        case .refold: 1.5
+        }
+    }
+
+    static func length(_ transition: TrackScore.Transition, window: Double) -> Double {
+        switch transition {
+        case .snap: min(0.6, window)
+        case .glide: min(3.5, max(0.5, window))
+        case .refold: min(4.5, max(1.2, window))
+        }
+    }
+
+    private mutating func cut(at time: Double, establishing: Bool, tempo: Double?, length: Double? = nil,
+                              planned: TrackScore.Keyframe? = nil, boldness: Double = 1) {
         // Start from wherever the picture is now (a cut can land mid-transition).
         let x = min(1, max(0, (time - transitionStart) / transitionLength))
         let t = x * x * x * (x * (x * 6 - 15) + 10)
         from = Shot(name: to.name, cover: from.cover.mixed(to.cover, t), camera: from.camera.mixed(to.camera, t))
         cuts += 1
-        to = motion > 0 ? next(establishing: establishing) : Self.still(lyrics: lyrics)
+        to = motion > 0 ? next(establishing: establishing, boldness: boldness) : Self.still(lyrics: lyrics)
+        if let planned, motion > 0 {
+            // The score's framing, at its intensity (scaled by the Motion setting).
+            to.camera = planned.framing.camera(intensity: planned.intensity * motion, side: cuts % 2 == 0 ? 1 : -1)
+            to.name = "score:\(planned.framing.rawValue)"
+            directives[cuts - 1] = planned
+        }
         // The very first shot is simply there; there's nothing on screen to move from.
         if cuts == 1 { from = to }
         transitionStart = time
@@ -323,7 +377,7 @@ public struct Choreographer: Sendable {
 
     /// The next shot: chosen from the library by the track's seed, bolder when the music is
     /// loud, always leaving room for lyrics when there are some.
-    private func next(establishing: Bool) -> Shot {
+    private func next(establishing: Bool, boldness extra: Double = 1) -> Shot {
         var rng = SeededRandom(seed: seed &+ UInt64(cuts) &* 0x9E37_79B9_7F4A_7C15)
         let intensity = min(1, max(0, shortEnergy * 1.6))
         if establishing {
@@ -335,7 +389,7 @@ public struct Choreographer: Sendable {
         if pick.name == to.name { pick = library[(library.firstIndex { $0.name == pick.name }! + 1) % library.count] }
         // Loud passages go bold; quiet ones stay composed and keep the cover.
         if intensity < 0.3, pick.cover.visibility == 0 { pick = library[0] }
-        let boldness = 0.5 + 0.5 * intensity
+        let boldness = (0.5 + 0.5 * intensity) * extra
         var camera = camera(rng: &rng, boldness: boldness * motion)
         // With the cover gone the sheet is the whole picture: sometimes push right in.
         if pick.cover.visibility == 0, rng.unit() < 0.5 { camera.zoom *= 1 + 0.35 * motion }

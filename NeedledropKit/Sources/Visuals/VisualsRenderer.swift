@@ -61,6 +61,8 @@ public struct VisualInput: Sendable {
     /// Seconds until the next lyric line starts (nil: none coming). The picture moves in the
     /// gaps between lines and settles before the next one.
     public var nextLyricIn: Double?
+    /// That line's index in the lyrics (for the track's score).
+    public var nextLyricIndex: Int?
 
     public init(features: AudioFeatures = AudioFeatures(), beatAge: Double? = nil, active: Bool = false,
                 lyricsAvailable: Bool = false, lyric: LyricFrame? = nil, caption: CaptionFrame? = nil) {
@@ -124,6 +126,11 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// off, the choreography places it.
     public var coverInStrip = true
     private var choreographer = Choreographer()
+    /// The plan for the track playing (see `TrackScore`); nil: the built-in rules decide.
+    public var score: TrackScore? {
+        get { choreographer.score }
+        set { choreographer.score = newValue }
+    }
     private var shot = Choreographer.Frame(cover: .hero, camera: .identity, targetCover: .hero,
                                            targetCamera: .identity, shot: "hero", cuts: 0,
                                            moving: false, progress: 1, composition: 0)
@@ -334,6 +341,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             trackID: input.trackID ?? currentLookID, active: input.active && !input.sideEnded)
         shotInput.lineShowing = input.lyric != nil
         shotInput.nextLineIn = input.lyricsAvailable ? input.nextLyricIn : nil
+        shotInput.nextLineIndex = input.nextLyricIndex
         shot = choreographer.update(shotInput)
         // The cover lives in the now-playing strip, small and always there; the choreography
         // moves the camera and the folds around it.
@@ -420,7 +428,16 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
 
     /// Text sizes to try, widest first (scene units: frame height = 1): (max width, font, lines).
     /// One long line running along the crease reads best; wrap only when it won't fit.
-    private static let lyricSizes: [(width: Double, font: Double, lines: Int)] = [
+    /// Sizes to try for a line the score marks big or as a whisper.
+    nonisolated static func sizes(for emphasis: TrackScore.Emphasis) -> [(width: Double, font: Double, lines: Int)] {
+        switch emphasis {
+        case .normal: lyricSizes
+        case .big: [(1.6, 0.12, 1), (1.4, 0.105, 1), (1.1, 0.1, 2), (0.9, 0.09, 2)] + lyricSizes
+        case .whisper: [(0.9, 0.05, 1), (0.7, 0.045, 2)] + lyricSizes.suffix(2)
+        }
+    }
+
+    nonisolated static let lyricSizes: [(width: Double, font: Double, lines: Int)] = [
         (1.5, 0.08, 1), (1.1, 0.07, 1), (0.8, 0.06, 1), (0.9, 0.065, 2), (0.6, 0.058, 3),
     ]
 
@@ -439,23 +456,39 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// (morphing during it). Two to four creases each, unless the art direction fixes the
     /// count: a few long seams for the words to sit on.
     private func foldLayout(aspect: Double, bass: Double) -> FoldLayout {
-        guard motion > 0, shot.composition > 0 else { return foldLayout(aspect: aspect, bass: bass, composition: 0) }
-        let to = foldLayout(aspect: aspect, bass: bass, composition: shot.composition)
+        guard motion > 0, shot.composition > 0 else { return foldLayout(aspect: aspect, bass: bass, composition: 0, directive: nil) }
+        let to = foldLayout(aspect: aspect, bass: bass, composition: shot.composition, directive: shot.directive)
         guard shot.progress < 1 else { return to }
-        return foldLayout(aspect: aspect, bass: bass, composition: shot.composition - 1).morphed(to: to, shot.progress)
+        return foldLayout(aspect: aspect, bass: bass, composition: shot.composition - 1, directive: shot.previousDirective)
+            .morphed(to: to, shot.progress)
     }
 
-    private func foldLayout(aspect: Double, bass: Double, composition: Int) -> FoldLayout {
+    /// One composition: seeded, unless the score's keyframe fixes its crease count or angle.
+    func foldLayout(aspect: Double, bass: Double, composition: Int, directive: TrackScore.Keyframe?) -> FoldLayout {
         let style = currentStyle
-        func make(_ composition: Int) -> FoldLayout {
-            let seed = composition == 0 ? albumSeed : albumSeed ^ (UInt64(truncatingIfNeeded: composition) &* 0x9E37_79B9_7F4A_7C15)
-            var rng = SeededRandom(seed: seed ^ 0xA9)
-            let angle = style.foldAngle.map { composition == 0 ? $0 : $0 + (rng.unit() - 0.5) * 24 }
-            return FoldLayout.make(seed: seed, aspect: aspect, flow: foldFlow, bass: bass,
-                                   angle: angle, count: style.foldCount ?? 2 + Int(rng.unit() * 2.99),
-                                   turbulence: style.turbulence)
+        let seed = composition == 0 ? albumSeed : albumSeed ^ (UInt64(truncatingIfNeeded: composition) &* 0x9E37_79B9_7F4A_7C15)
+        var rng = SeededRandom(seed: seed ^ 0xA9)
+        let seededAngle = style.foldAngle.map { composition == 0 ? $0 : $0 + (rng.unit() - 0.5) * 24 }
+        let seededCount = style.foldCount ?? 2 + Int(rng.unit() * 2.99)
+        return FoldLayout.make(seed: seed, aspect: aspect, flow: foldFlow, bass: bass,
+                               angle: directive?.angleDegrees ?? seededAngle, count: directive?.creases ?? seededCount,
+                               turbulence: style.turbulence)
+    }
+
+    /// The score's palette moves and accent strip, blended across the move: (accent strip,
+    /// swap 0…1, mute 0…1).
+    private var paletteMoves: (accent: Float, swap: Float, mute: Float) {
+        func amounts(_ k: TrackScore.Keyframe?) -> (Float, Float) {
+            switch k?.palette ?? TrackScore.PaletteMove.none {
+            case .none: (0, 0)
+            case .swap: (1, 0)
+            case .mute: (0, 1)
+            }
         }
-        return make(composition)
+        let t = Float(shot.moving ? shot.progress : 1)
+        let a = amounts(shot.previousDirective), b = amounts(shot.directive)
+        let accent = Float((t < 0.5 ? shot.previousDirective : shot.directive)?.accentStrip ?? 1)
+        return (accent, a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
     }
 
     static func crease(_ c: FoldLayout.Crease) -> SIMD4<Float> {
@@ -466,7 +499,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// Can a lyric put ink at background point `p`? It must show on screen under the camera
     /// now and the camera the shot is heading to, and stay clear of the cover (where it is and
     /// where it's going) and the caption.
-    private func printable(aspect: Double, hasArt: Bool, time: Double, avoidCaption: Bool = true) -> (SIMD2<Double>) -> Bool {
+    private func printable(aspect: Double, hasArt: Bool, time: Double, avoidCaption: Bool = true,
+                           band: ClosedRange<Double>? = nil) -> (SIMD2<Double>) -> Bool {
         let cameras = [shot.camera, shot.targetCamera].map { $0.worldFromScreen(aspect: aspect).inverse }
         let covers = hasArt ? [shot.cover, shot.targetCover] : []
         var caption: CGRect?
@@ -489,6 +523,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                 if covers.contains(where: { $0.contains(q, aspect: aspect, padding: 0.035) }) { return false }
                 if let caption, caption.contains(CGPoint(x: q.x, y: q.y)) { return false }
                 if let strip, strip.contains(CGPoint(x: q.x, y: q.y)) { return false }
+                if let band, !band.contains(q.y) { return false }
             }
             return true
         }
@@ -517,6 +552,16 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         if lyricSlots.last?.id != input.lyric?.id || (input.lyric == nil && lyricSlots.last?.exitedAt == nil) {
             for i in lyricSlots.indices where lyricSlots[i].exitedAt == nil { lyricSlots[i].exitedAt = time }
             if let lyric = input.lyric {
+                // The score may ask for a line to be big or a whisper, and where on screen.
+                let treatment = score?.treatment(line: lyric.id)
+                let band: ClosedRange<Double>? = switch treatment?.placement ?? .any {
+                case .any: nil
+                case .upper: 0...0.55
+                case .middle: 0.2...0.8
+                case .lower: 0.45...1
+                }
+                let sizes = Self.sizes(for: treatment?.emphasis ?? .normal)
+                let placed = printable(aspect: layout.aspect, hasArt: hasArt, time: time, band: band)
                 let allowed = printable(aspect: layout.aspect, hasArt: hasArt, time: time)
                 let blocked = lyricSlots.filter { slotOpacity($0, time: time) > 0.05 }.compactMap { slot in
                         slotFrame(slot, layout: layout).map { boundingBox($0, size: slot.size) }
@@ -524,8 +569,10 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                 // Never drop a line: if it won't fit, let it share space with the line soaking
                 // out, then with the caption.
                 let relaxedAllowed = printable(aspect: layout.aspect, hasArt: hasArt, time: time, avoidCaption: false)
-                placing: for (obstacles, test) in [(blocked, allowed), ([], allowed), ([], relaxedAllowed)] {
-                    for size in Self.lyricSizes {
+                placing: for (obstacles, test, choices) in [(blocked, placed, sizes), (blocked, allowed, sizes),
+                                                            (blocked, allowed, Self.lyricSizes), ([], allowed, Self.lyricSizes),
+                                                            ([], relaxedAllowed, Self.lyricSizes)] {
+                    for size in choices {
                         guard let text = lyricTexture(lyric.text, size: size, sceneHeight: sceneHeight),
                               let spot = layout.spot(forLine: lyric.id, size: text.size, obstacles: obstacles,
                                                      allowed: test) else { continue }
@@ -552,7 +599,10 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         guard currentBackground == .paper else { return flatTone }
         let palette = (slots.first?.look.palette ?? .neutral).colors.sorted { $0.luminance < $1.luminance }
         let k = layout.strip(at: p)
-        let base = k == 1 ? palette[4] : palette[3]
+        // As the shader colours it once the move has settled (accent strip, palette swap).
+        let accentStrip = shot.directive?.accentStrip ?? 1
+        let swap = shot.directive?.palette == .swap
+        let base = (k == accentStrip) != swap ? palette[4] : palette[3]
         let colour = SIMD3(Double(max(base.r, 0.12)), Double(max(base.g, 0.12)), Double(max(base.b, 0.12)))
         let m = layout.creases.first?.normal ?? SIMD2(0, 1)
         let sgn = k % 2 == 0 ? 1.0 : -1.0
@@ -660,7 +710,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             default: uniforms.crease.3 = crease
             }
         }
-        uniforms.fold = SIMD4(Float(layout.tilt), 1, 0, 0)  // strip 1 gets the accent colour
+        let moves = paletteMoves
+        uniforms.fold = SIMD4(Float(layout.tilt), moves.accent, moves.swap, moves.mute)
         uniforms.light = SIMD4(Float(layout.light.x), Float(layout.light.y), Float(layout.light.z), 0)
     }
 
