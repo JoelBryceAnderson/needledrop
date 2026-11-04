@@ -5,5 +5,7 @@ xcuserdata/
 DerivedData/
 Fixtures/*.wav
 Fixtures/*.tracks.json
+Fixtures/*.lrc
+Fixtures/*.cover.png
 !Fixtures/.gitkeep
 .DS_Store

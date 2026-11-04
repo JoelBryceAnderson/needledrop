@@ -1,0 +1,147 @@
+import CoreGraphics
+import Foundation
+import simd
+
+/// The composition of the paper: a few long creases across the frame, and where text can
+/// be set along them. Shared by the shader (which draws the folds) and the lyric layout
+/// (which sets words against them), so the words sit exactly on the folds.
+///
+/// Coordinates are scene units: y runs 0…1 down the frame, x runs 0…aspect across.
+struct FoldLayout: Equatable {
+    struct Crease: Equatable {
+        var point: SIMD2<Double>
+        /// Radians. The crease runs along (cos, sin).
+        var angle: Double
+
+        var direction: SIMD2<Double> { SIMD2(cos(angle), sin(angle)) }
+        var normal: SIMD2<Double> { SIMD2(-sin(angle), cos(angle)) }
+        /// Signed distance of `p` from the crease, positive on the `normal` side.
+        func side(_ p: SIMD2<Double>) -> Double { simd_dot(p - point, normal) }
+    }
+
+    var aspect: Double
+    /// Ordered along the shared normal, so the strip index is the count of creases passed.
+    var creases: [Crease]
+    /// Fold depth (radians each strip tilts).
+    var tilt: Double
+    /// The light, slowly swinging so strips take turns catching it.
+    var light: SIMD3<Double>
+
+    static let creaseCount = 3
+
+    /// A composition for an album (`seed`) at animation time `flow`. The creases drift a
+    /// little; the base geometry is the album's own.
+    static func make(seed: UInt64, aspect: Double, flow: Double, bass: Double = 0) -> FoldLayout {
+        var rng = SeededRandom(seed: seed ^ 0xF01D)
+        // A dramatic diagonal, leaning one way or the other.
+        let lean = (12 + 22 * rng.unit()) * (rng.unit() < 0.5 ? -1 : 1)
+        let base = lean * .pi / 180
+        let normal = SIMD2(-sin(base), cos(base))
+        let centre = SIMD2(aspect / 2, 0.5)
+
+        // Spread the creases across the frame's extent along the normal.
+        let corners = [SIMD2(0.0, 0.0), SIMD2(aspect, 0), SIMD2(0, 1), SIMD2(aspect, 1)]
+        let extents = corners.map { simd_dot($0 - centre, normal) }
+        let lo = extents.min()!, hi = extents.max()!
+        let fractions = [0.27, 0.53, 0.78]
+
+        var creases: [Crease] = []
+        for (i, f) in fractions.enumerated() {
+            let jitter = (rng.unit() - 0.5) * 0.08
+            let wobble = 0.018 * sin(flow * 0.2 + Double(i) * 2.1)
+            let offset = lo + (hi - lo) * (f + jitter) + wobble
+            let angle = base + (rng.unit() - 0.5) * 0.07 + 0.02 * sin(flow * 0.13 + Double(i))
+            creases.append(Crease(point: centre + normal * offset, angle: angle))
+        }
+
+        let tilt = 0.5 * (0.8 + 0.2 * sin(flow * 0.15)) + 0.08 * bass
+        let swing = cos(flow * 0.1)
+        let light = simd_normalize(SIMD3(normal.x * 0.65 * swing, normal.y * 0.65 * swing, 0.75))
+        return FoldLayout(aspect: aspect, creases: creases, tilt: tilt, light: light)
+    }
+
+    /// Which strip `p` is on (0…creaseCount).
+    func strip(at p: SIMD2<Double>) -> Int {
+        creases.filter { $0.side(p) > 0 }.count
+    }
+
+    // MARK: - Setting text along a crease
+
+    /// Text set on one side of a crease: its centre, at `along` (scene units from the
+    /// crease's point), offset off the crease by half its height plus a gap.
+    struct TextSpot: Equatable {
+        var crease: Int
+        /// +1: on the crease's normal side; -1: the other side.
+        var side: Double
+        var along: Double
+    }
+
+    /// Centre and angle of text of `size` (width along the crease, height across) at `spot`.
+    func frame(for spot: TextSpot, size: SIMD2<Double>) -> (centre: SIMD2<Double>, angle: Double) {
+        let c = creases[spot.crease]
+        let gap = 0.025
+        let centre = c.point + c.direction * spot.along + c.normal * spot.side * (size.y / 2 + gap)
+        return (centre, c.angle)
+    }
+
+    /// Corners of a rotated rectangle.
+    static func corners(centre: SIMD2<Double>, angle: Double, size: SIMD2<Double>) -> [SIMD2<Double>] {
+        let d = SIMD2(cos(angle), sin(angle)), n = SIMD2(-sin(angle), cos(angle))
+        let hw = d * size.x / 2, hh = n * size.y / 2
+        return [centre - hw - hh, centre + hw - hh, centre + hw + hh, centre - hw + hh]
+    }
+
+    /// Does the rotated text rectangle stay on screen, on one strip, and clear of `obstacles`?
+    func fits(_ spot: TextSpot, size: SIMD2<Double>, obstacles: [CGRect], oneStrip: Bool = true,
+              margin: Double = 0.035) -> Bool {
+        let (centre, angle) = frame(for: spot, size: size)
+        let cs = Self.corners(centre: centre, angle: angle, size: size)
+        for p in cs where p.x < margin || p.x > aspect - margin || p.y < margin || p.y > 1 - margin { return false }
+        // Entirely on one strip: no other crease runs through the words.
+        if oneStrip {
+            let strip = strip(at: centre)
+            guard cs.allSatisfy({ self.strip(at: $0) == strip }) else { return false }
+        }
+        // Clear of obstacles: sample the text area, and check obstacle corners aren't inside it.
+        let d = SIMD2(cos(angle), sin(angle)), n = SIMD2(-sin(angle), cos(angle))
+        for obstacle in obstacles {
+            for i in 0...6 {
+                for j in 0...3 {
+                    let p = centre + d * size.x * (Double(i) / 6 - 0.5) + n * size.y * (Double(j) / 3 - 0.5)
+                    if obstacle.contains(CGPoint(x: p.x, y: p.y)) { return false }
+                }
+            }
+            let oc = [CGPoint(x: obstacle.minX, y: obstacle.minY), CGPoint(x: obstacle.maxX, y: obstacle.minY),
+                      CGPoint(x: obstacle.maxX, y: obstacle.maxY), CGPoint(x: obstacle.minX, y: obstacle.maxY)]
+            for o in oc {
+                let local = SIMD2(o.x, o.y) - centre
+                if abs(simd_dot(local, d)) < size.x / 2, abs(simd_dot(local, n)) < size.y / 2 { return false }
+            }
+        }
+        return true
+    }
+
+    /// A good spot for line number `index`: crease, side and position along it take turns
+    /// (so lines move through the composition), sliding along the crease until the text
+    /// fits. Nil if nothing fits at this size.
+    func spot(forLine index: Int, size: SIMD2<Double>, obstacles: [CGRect]) -> TextSpot? {
+        var candidates: [(crease: Int, side: Double)] = []
+        for k in 0..<creases.count { candidates += [(k, -1), (k, 1)] }
+        // Each line moves on: a different crease or side, and a different stretch along it.
+        let start = (index * 3) % candidates.count
+        let ranked = (0..<candidates.count).map { candidates[($0 + start) % candidates.count] }
+        let anchors = [-0.28, 0.12, 0.38, -0.05]
+        let preferred = anchors[abs(index) % anchors.count] * aspect
+        let positions = stride(from: -aspect, through: aspect, by: 0.025).sorted { abs($0 - preferred) < abs($1 - preferred) }
+        // Ideally the words sit on one strip; failing that, they may run across another fold.
+        for oneStrip in [true, false] {
+            for candidate in ranked {
+                for along in positions {
+                    let spot = TextSpot(crease: candidate.crease, side: candidate.side, along: along)
+                    if fits(spot, size: size, obstacles: obstacles, oneStrip: oneStrip) { return spot }
+                }
+            }
+        }
+        return nil
+    }
+}

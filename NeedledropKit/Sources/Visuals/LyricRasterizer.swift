@@ -16,17 +16,41 @@ enum LyricRasterizer {
         return render(text, fontSize: size, maxWidth: maxWidth, maxLines: .max)
     }
 
+    /// The now-playing caption: the title in the lyric face, then a smaller regular line,
+    /// left-aligned like a label printed in the corner.
+    static func caption(title: String, subtitle: String, fontSize: CGFloat, maxWidth: CGFloat) -> CGImage? {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .left
+        paragraph.lineHeightMultiple = 0.95
+        let text = NSMutableAttributedString(string: title, attributes: [
+            .font: serif(fontSize, .bold), .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
+        ])
+        if !subtitle.isEmpty {
+            text.append(NSAttributedString(string: "\n" + subtitle, attributes: [
+                .font: serif(fontSize * 0.6, .regular), .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
+            ]))
+        }
+        return draw(text, fontSize: fontSize, maxWidth: maxWidth, maxLines: 3)
+    }
+
+    private static func serif(_ size: CGFloat, _ weight: NSFont.Weight) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: weight)
+        return base.fontDescriptor.withDesign(.serif).flatMap { NSFont(descriptor: $0, size: size) } ?? base
+    }
+
     private static func render(_ text: String, fontSize: CGFloat, maxWidth: CGFloat, maxLines: Int) -> CGImage? {
-        let base = NSFont.systemFont(ofSize: fontSize, weight: .bold)
-        let font = base.fontDescriptor.withDesign(.serif).flatMap { NSFont(descriptor: $0, size: fontSize) } ?? base
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineHeightMultiple = 0.92
         let attributed = NSAttributedString(string: text, attributes: [
-            .font: font,
+            .font: serif(fontSize, .bold),
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
         ])
+        return draw(attributed, fontSize: fontSize, maxWidth: maxWidth, maxLines: maxLines)
+    }
+
+    private static func draw(_ attributed: NSAttributedString, fontSize: CGFloat, maxWidth: CGFloat, maxLines: Int) -> CGImage? {
 
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         let fit = CTFramesetterSuggestFrameSizeWithConstraints(

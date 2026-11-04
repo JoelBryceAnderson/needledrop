@@ -26,6 +26,24 @@ public struct SessionSnapshot: Sendable {
     public func position(at t: Double) -> Double? { clock?.position(at: t) }
 }
 
+/// Known tracks with their own metadata, artwork and lyrics — e.g. a replay's sidecar —
+/// used instead of the online lookups.
+public protocol TrackCatalog: Sendable {
+    func entry(for match: TrackMatch) -> CatalogEntry?
+}
+
+public struct CatalogEntry: Sendable {
+    public var metadata: TrackMetadata
+    public var artwork: Data?
+    public var lyrics: Lyrics?
+
+    public init(metadata: TrackMetadata, artwork: Data? = nil, lyrics: Lyrics? = nil) {
+        self.metadata = metadata
+        self.artwork = artwork
+        self.lyrics = lyrics
+    }
+}
+
 public enum EngineEvent: Sendable {
     case pipeline(PipelineEvent)
     case trackChanged(TrackMatch?)
@@ -47,6 +65,7 @@ public actor Engine {
     private let recognition: RecognitionController
     private let metadata: MetadataResolver?
     private let lyricsProvider: LyricsProvider?
+    private let catalog: (any TrackCatalog)?
     private let continuation: AsyncStream<EngineEvent>.Continuation
     /// Archive events go through one stream so the archiver sees them in order.
     private let archiveEvents: AsyncStream<ArchiveEvent>
@@ -62,12 +81,14 @@ public actor Engine {
         recognizer: any TrackRecognizer,
         metadata: MetadataResolver?,
         lyrics: LyricsProvider? = nil,
-        archiver: Archiver? = nil
+        archiver: Archiver? = nil,
+        catalog: (any TrackCatalog)? = nil
     ) {
         let recognition = RecognitionController(recognizer: recognizer)
         self.recognition = recognition
         self.metadata = metadata
         lyricsProvider = lyrics
+        self.catalog = catalog
         self.archiver = archiver
         (archiveEvents, archiveInbox) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         machine = SessionMachine(config: session)
@@ -178,6 +199,11 @@ public actor Engine {
     }
 
     private func resolveMetadata(for track: TrackMatch) {
+        if let entry = catalog?.entry(for: track) {
+            metadataResolved(entry.metadata, artwork: entry.artwork, for: track)
+            if entry.lyrics != nil || lyricsProvider == nil { lyricsResolved(entry.lyrics, for: track) }
+            return
+        }
         guard let metadata else { return }
         Task { [weak self] in
             let info = await metadata.resolve(track)
@@ -194,7 +220,7 @@ public actor Engine {
         if let duration = info.duration {
             apply(.trackDuration(identity: track.identity, seconds: duration))
         }
-        if let lyricsProvider {
+        if let lyricsProvider, catalog?.entry(for: track)?.lyrics == nil {
             Task { [weak self] in
                 let lyrics = await lyricsProvider.lyrics(for: info)
                 await self?.lyricsResolved(lyrics, for: track)

@@ -14,13 +14,18 @@ enum Shaders {
         float4 audio;   // bass, mids, highs, level
         float4 rhythm;  // beat, unused, mix (0 = previous slot, 1 = current), coverAmount
         float4 slots;   // hasArt0, hasArt1, hasMask0, hasMask1
-        float4 style;   // background (0 = paper, 1 = smoke), unused…
+        float4 style;   // background (0 = paper, 1 = smoke), cover centre x (uv), cover size (frame heights), unused
         // Two lyric lines printed on the scene. a: centre.xy, half size.xy (height units, x
         // across aspect); b: angle, opacity, blur (mip level), unused.
         float4 ink0a;
         float4 ink0b;
         float4 ink1a;
         float4 ink1b;
+        float4 ink2a;   // the now-playing caption, printed the same way
+        float4 ink2b;
+        float4 crease[3]; // normal.xy, offset (dot(q, normal) > offset = past it), active
+        float4 fold;    // tilt (radians), accent strip, unused, unused
+        float4 light;   // xyz
         float4 palette0[6];
         float4 palette1[6];
     };
@@ -95,34 +100,6 @@ enum Shaders {
         return max(c, 0.0);
     }
 
-    // --- Paper: one sheet folded into big flat planes, each lit by its own angle ---
-
-    // Lattice vertex g: wanders slowly; z is fold height. Jitter + drift stay under 0.5,
-    // so triangles never flip over each other.
-    float3 paperVertex(int2 g, float flow, float bass) {
-        float2 gf = float2(g);
-        float2 h = float2(hash21(gf + 0.37), hash21(gf + 4.1));
-        float2 drift = float2(sin(flow * 0.35 + h.x * 6.283), cos(flow * 0.29 + h.y * 6.283)) * 0.12;
-        float2 xy = gf + (h - 0.5) * 0.55 + drift;
-        // Alternate ridges and valleys like a folded sheet; the folds slowly open and
-        // close across the paper, and bass deepens them a little.
-        float ridge = ((g.x + g.y) & 1) == 0 ? 0.5 : -0.5;
-        float fold = 0.55 + 0.45 * sin(flow * 0.18 + gf.x * 0.45 - gf.y * 0.3);
-        float z = (ridge * 1.3 * fold + (vnoise(gf * 0.4 + flow * 0.06) - 0.5) * 0.5) * (1.0 + 0.35 * bass);
-        return float3(xy, z);
-    }
-
-    float edgeSide(float2 p, float2 a, float2 b) {
-        return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-    }
-
-    bool inTriangle(float2 p, float3 a, float3 b, float3 c) {
-        float d1 = edgeSide(p, a.xy, b.xy), d2 = edgeSide(p, b.xy, c.xy), d3 = edgeSide(p, c.xy, a.xy);
-        bool negative = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-        bool positive = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-        return !(negative && positive);
-    }
-
     // --- Lyrics as ink on the paper ---------------------------------------------
 
     float inkLine(float2 q, float4 a, float4 b, texture2d<float> tex, sampler s) {
@@ -134,13 +111,16 @@ enum Shaders {
         return tex.sample(s, t, level(b.z)).a * b.y;
     }
 
-    /// Ink coverage at scene uv: both lyric slots, so one can soak out as the next soaks in.
-    float inkAt(float2 uv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1) {
+    /// Ink coverage at scene uv: both lyric slots (one can soak out as the next soaks in)
+    /// and the caption.
+    float inkAt(float2 uv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1,
+                texture2d<float> ink2) {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
         float2 q = float2(uv.x * u.frame.x / u.frame.y, uv.y);
         float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s);
         float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s);
-        return 1.0 - (1.0 - a0) * (1.0 - a1);
+        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s);
+        return 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
     }
 
     /// Printed in the palette's darkest or lightest colour, whichever stands out from the paper.
@@ -149,56 +129,42 @@ enum Shaders {
         return lum > 0.4 ? pal[0].rgb * 0.85 : mix(pal[5].rgb, float3(1.0), 0.45);
     }
 
-    /// Paper colour (rgb) and how much light the facet catches (a).
-    float4 paperFacet(float3 a, float3 b, float3 c, float3 light, constant float4 *pal) {
-        float3 n = normalize(cross(b - a, c - a));
-        if (n.z < 0.0) n = -n;
-        // One or two sheets of paper (mid and light palette entries) in big regions: the
-        // light and the creases carry the picture, not a colour mosaic.
-        float2 centre = (a.xy + b.xy + c.xy) / 3.0;
-        int index = vnoise(centre * 0.12 + 3.1) > 0.62 ? 4 : 3;
-        float3 base = max(pal[index].rgb, float3(0.12));
-        float lit = max(0.0, dot(n, light));
-        return float4(base, 0.42 + 0.8 * lit);
-    }
+    // --- Paper: a sheet folded along a few long creases (geometry from FoldLayout) ---
 
-    float4 paperSample(float2 p, float flow, float bass, float3 light, constant float4 *pal) {
-        int2 c = int2(floor(p));
-        float3 v[4][4];
-        for (int j = 0; j < 4; j++)
-            for (int i = 0; i < 4; i++)
-                v[j][i] = paperVertex(c + int2(i - 1, j - 1), flow, bass);
-        for (int j = 0; j < 3; j++) {
-            for (int i = 0; i < 3; i++) {
-                float3 a = v[j][i], b = v[j][i + 1], d = v[j + 1][i], e = v[j + 1][i + 1];
-                bool flip = hash21(float2(c + int2(i - 1, j - 1)) + 9.7) > 0.5;
-                float3 t0 = flip ? e : d;
-                if (inTriangle(p, a, b, t0)) return paperFacet(a, b, t0, light, pal);
-                float3 s0 = flip ? a : b;
-                if (inTriangle(p, s0, e, d)) return paperFacet(s0, e, d, light, pal);
-            }
+    /// Strip index at q: how many creases q is past. Strips alternate mountain / valley.
+    int stripAt(float2 q, constant Uniforms &u) {
+        int k = 0;
+        for (int i = 0; i < 3; i++) {
+            float4 c = u.crease[i];
+            if (c.w > 0.5 && dot(q, c.xy) > c.z) k++;
         }
-        return float4(pal[3].rgb, 1.0);
+        return k;
     }
 
     float3 paper(float2 uv, constant Uniforms &u, constant float4 *pal,
-                 texture2d<float> ink0, texture2d<float> ink1) {
+                 texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
         float aspect = u.frame.x / u.frame.y;
-        const float rows = 3.4;
-        float flow = u.frame.z;
-        // The light swings slowly across the sheet, so folds catch and lose it.
-        float3 light = normalize(float3(0.55 * cos(flow * 0.11), -0.5 + 0.12 * sin(flow * 0.07), 0.75));
-        float2 p = uv * float2(aspect, 1.0) * rows + 7.0;
-        float px = rows / u.frame.y;
-        // 4× supersampling: clean creases (and letters) at 480 lines. Ink is mixed into the
-        // paper *before* lighting, so words are printed on the folds and shade with them.
-        float3 sum = float3(0.0);
+        float3 light = u.light.xyz;
+        float tilt = u.fold.x;
+        float3 sheet = max(pal[3].rgb, float3(0.12));
+        float3 accent = max(pal[4].rgb, float3(0.12));
+        // 4× supersampling: clean creases and letters at 480 lines.
         const float2 offsets[4] = { float2(-0.25, -0.25), float2(0.25, -0.25), float2(-0.25, 0.25), float2(0.25, 0.25) };
-        for (int k = 0; k < 4; k++) {
-            float4 facet = paperSample(p + offsets[k] * px, flow, u.audio.x, light, pal);
-            float ink = inkAt(uv + offsets[k] / u.frame.xy, u, ink0, ink1);
-            float3 base = mix(facet.rgb, inkColor(facet.rgb, pal), ink * 0.92);
-            sum += base * facet.a;
+        float3 sum = float3(0.0);
+        for (int s = 0; s < 4; s++) {
+            float2 suv = uv + offsets[s] / u.frame.xy;
+            float2 q = float2(suv.x * aspect, suv.y);
+            int k = stripAt(q, u);
+            float2 m = u.crease[min(k, 2)].xy;
+            float sgn = (k % 2 == 0) ? 1.0 : -1.0;
+            float3 n = normalize(float3(m * sin(tilt) * sgn, cos(tilt)));
+            float lit = 0.38 + 0.85 * max(0.0, dot(n, light));
+            // One sheet colour, with the album's second colour on one strip for an accent.
+            float3 c = (k == int(u.fold.y) ? accent : sheet) * lit;
+            // Ink is chosen against the lit paper, so it reads on bright and shadowed strips.
+            float ink = inkAt(suv, u, ink0, ink1, ink2);
+            c = mix(c, inkColor(c, pal), ink * 0.92);
+            sum += c;
         }
         return sum * 0.25;
     }
@@ -214,8 +180,9 @@ enum Shaders {
     Cover livingCover(float2 uv, constant Uniforms &u, texture2d<float> art, texture2d<float> mask,
                       float hasMask, sampler s) {
         float aspect = u.frame.x / u.frame.y;
-        float2 p = (uv - 0.5) * float2(aspect, 1.0);
-        float size = 0.64 * (1.0 + 0.005 * u.rhythm.x);
+        // Centred, or moved aside to leave a field for lyrics (animated by the renderer).
+        float2 p = (uv - float2(u.style.y, 0.5)) * float2(aspect, 1.0);
+        float size = u.style.z * (1.0 + 0.005 * u.rhythm.x);
         float2 c = p / size + 0.5;
 
         float flow = u.frame.z;
@@ -245,13 +212,13 @@ enum Shaders {
 
     float3 slotColor(float2 uv, constant Uniforms &u, constant float4 *pal,
                      texture2d<float> art, texture2d<float> mask, float hasArt, float hasMask, sampler s,
-                     texture2d<float> ink0, texture2d<float> ink1) {
+                     texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
         float3 base;
         if (u.style.x < 0.5) {
-            base = paper(uv, u, pal, ink0, ink1);
+            base = paper(uv, u, pal, ink0, ink1, ink2);
         } else {
             base = paletteBleed(uv, u, pal);
-            base = mix(base, inkColor(base, pal), inkAt(uv, u, ink0, ink1) * 0.92);
+            base = mix(base, inkColor(base, pal), inkAt(uv, u, ink0, ink1, ink2) * 0.92);
         }
         float amount = u.rhythm.w * hasArt;
         if (amount > 0.001) {
@@ -269,11 +236,12 @@ enum Shaders {
                                    texture2d<float> art1 [[texture(2)]],
                                    texture2d<float> mask1 [[texture(3)]],
                                    texture2d<float> ink0 [[texture(4)]],
-                                   texture2d<float> ink1 [[texture(5)]]) {
+                                   texture2d<float> ink1 [[texture(5)]],
+                                   texture2d<float> ink2 [[texture(6)]]) {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_edge);
-        float3 col = slotColor(in.uv, u, u.palette0, art0, mask0, u.slots.x, u.slots.z, s, ink0, ink1);
+        float3 col = slotColor(in.uv, u, u.palette0, art0, mask0, u.slots.x, u.slots.z, s, ink0, ink1, ink2);
         if (u.rhythm.z < 0.999) {
-            float3 prev = slotColor(in.uv, u, u.palette1, art1, mask1, u.slots.y, u.slots.w, s, ink0, ink1);
+            float3 prev = slotColor(in.uv, u, u.palette1, art1, mask1, u.slots.y, u.slots.w, s, ink0, ink1, ink2);
             col = mix(prev, col, u.rhythm.z);
         }
         float2 v = in.uv - 0.5;

@@ -38,7 +38,7 @@ let package = Package(
         // Wires capture → analysis → session → recognition → metadata, live or offline.
         .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Archive"]),
         // Feed recorded/synthetic audio through the pipeline as if it were live.
-        .target(name: "ReplayHarness", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "SessionState", "Pipeline"]),
+        .target(name: "ReplayHarness", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Pipeline"]),
         .executableTarget(name: "needledrop-replay", dependencies: ["ReplayHarness", "Pipeline", "AudioCapture", "Visuals"]),
 
         .testTarget(name: "AudioCaptureTests", dependencies: ["AudioCapture"]),

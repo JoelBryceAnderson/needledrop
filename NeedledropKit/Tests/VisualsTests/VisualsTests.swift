@@ -192,14 +192,15 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
         #expect(r > 180 && g > 150 && b < 100, "centre is \(r),\(g),\(b)")
     }
 
-    @Test func lyricsArePrintedBesideTheCover() throws {
-        // Two identical scenes, one with a lyric: only the ink should differ, and only
-        // where line 0 is printed (left of the cover).
+    @Test func lyricsArePrintedInTheFieldBesideTheCover() throws {
+        // Two identical scenes for a track with lyrics (cover moved to the left third), one
+        // with a line showing: only the ink differs, in the open field, never on the cover.
         func frame(_ lyric: LyricFrame?) throws -> [UInt8] {
             let renderer = try VisualsRenderer()
             renderer.show(AlbumLook(id: "blue", palette: Palette(colors: [RGB(0.2, 0.5, 0.75), RGB(0.1, 0.2, 0.35)]),
                                     artwork: bandedImage([(RGB(0.1, 0.1, 0.2), 1)])), at: 0)
-            return render(renderer, input: VisualInput(features: playing.features, active: true, lyric: lyric), frames: 90)
+            return render(renderer, input: VisualInput(features: playing.features, active: true, lyricsAvailable: true,
+                                                       lyric: lyric), frames: 90)
         }
         let plain = try frame(nil)
         let printed = try frame(LyricFrame(id: 0, text: "Thunder only happens when it's raining"))
@@ -213,8 +214,8 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
             }
             return n
         }
-        #expect(changed(x: 5..<100, y: 40..<110) > 300, "ink beside the cover")
-        #expect(changed(x: 110..<210, y: 30..<150) == 0, "nothing printed over the cover")
+        #expect(changed(x: 160..<315, y: 5..<175) > 300, "ink in the open field")
+        #expect(changed(x: 60..<130, y: 55..<125) == 0, "nothing printed over the cover")
     }
 
     @Test func staysBlackWhenNothingHasPlayed() throws {
