@@ -50,6 +50,17 @@ final class AppModel {
     private var lastSideEnded: Date?
     /// When the turntable went quiet (for the library wall).
     private(set) var idleSince: Date?
+    private let playerWatcher = PlayerWatcher()
+    private let setup = SetupPresenter()
+    // Recovery.
+    private var stall = StallDetector()
+    private var watchdog: Timer?
+    private var wakeObserver: NSObjectProtocol?
+    /// Keeps the display (the TV) awake while music plays.
+    private var displayAwake: NSObjectProtocol?
+    /// A track a music app announced, waiting for Needledrop to hear it start.
+    private var pendingPlayerTrack: (track: PlayerTrack, position: Double?, received: Date)?
+    private var applyingPlayerTrack = false
     private let styleStore = StyleStore(directory: MetadataResolver.defaultCacheDirectory.appendingPathComponent("styles"))
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
@@ -74,6 +85,7 @@ final class AppModel {
         }
         applyVisualSettings()
         renderer?.inputProvider = { [weak self] in self?.visualInput() ?? VisualInput() }
+        playerWatcher.onTrack = { [weak self] track, position in self?.playerAnnounced(track, position: position) }
     }
 
     /// Everything is read `outputLatency` behind the newest audio, so picture and words
@@ -99,7 +111,7 @@ final class AppModel {
                                          subtitle: [info.artist, info.album].compactMap { $0 }.joined(separator: "  ·  "))
         }
         if settings.showLyrics, let lyrics = session.lyrics, lyrics.isSynced, !lyrics.instrumental,
-           let clock = session.clock, clock.confidence(at: features.time) > 0.15 {
+           let clock = session.clock, session.identifiedByHand || clock.confidence(at: features.time) > 0.15 {
             input.lyricsAvailable = true
             let position = clock.position(at: features.time)
             if let cue = lyrics.cue(at: position) {
@@ -123,8 +135,18 @@ final class AppModel {
     }
 
     func launch() async {
+        // A crash or power cut mid-side leaves a raw recording behind: keep it.
+        for file in Archiver.recoverOrphans(root: settings.archive.root) {
+            append("Recovered an interrupted side recording: Sides/\(file.lastPathComponent)")
+        }
+        startRecoveryWatch()
         refreshDevices()
         await restartInput()
+        if settings.followMusicApps { playerWatcher.checkNow() }
+        // First run with a live input: walk through levels and latency.
+        if !settings.setupCompleted, settings.input == .systemDefault || { if case .device = settings.input { true } else { false } }() {
+            showSetup()
+        }
         presentVisuals()
         presentation.onDisplaysChanged = { [weak self] in self?.presentVisuals() }
     }
@@ -159,14 +181,22 @@ final class AppModel {
             } else {
                 source = LiveInputSource(deviceUID: nil)
             }
+        case .systemAudio:
+            source = SystemAudioSource()
+            append("Listening to this Mac's audio (not archived)")
         case .replay(let path):
             let url = URL(fileURLWithPath: path)
-            source = FileReplaySource(url: url, loop: true)
+            source = FileReplaySource(url: url, loop: true, audible: settings.replayAudible)
             do {
                 if let script = try ReplayScript.load(for: url) {
                     recognizer = script.recognizer()
                     catalog = script.catalog(directory: url.deletingLastPathComponent())
                     append("Using \(ReplayScript.sidecarURL(for: url).lastPathComponent) instead of Shazam")
+                } else if let script = await ReplayScript.fromTags(of: url), let track = script.tracks.first {
+                    // A song file you own: its tags say what it is; everything else (cover,
+                    // metadata, lyrics, art direction) is looked up as for a real record.
+                    recognizer = script.recognizer()
+                    append("Replaying \(track.artist) — \(track.title) (from the file's tags)")
                 }
             } catch {
                 append("Ignoring unreadable track sidecar: \(error.localizedDescription)")
@@ -174,7 +204,9 @@ final class AppModel {
         }
 
         let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver,
-                            lyrics: lyricsProvider, archiver: Archiver(settings: settings.archive, library: library),
+                            lyrics: lyricsProvider,
+                            // The archive is for records you own: streamed audio isn't recorded.
+                            archiver: settings.input == .systemAudio ? nil : Archiver(settings: settings.archive, library: library),
                             catalog: catalog)
         self.engine = engine
         eventTask = Task { [weak self] in
@@ -252,6 +284,8 @@ final class AppModel {
             if let text = Self.describe(side) { append(text) }
             switch side {
             case .sideStarted:
+                // Music just started: if a player app is the source, ask it what's on.
+                if settings.followMusicApps { playerWatcher.checkNow() }
                 // A new sitting after a long break starts again at side A.
                 if let ended = lastSideEnded, Date().timeIntervalSince(ended) < 15 * 60 { sideIndex += 1 } else { sideIndex = 0 }
             case .sideEnded:
@@ -260,12 +294,14 @@ final class AppModel {
                 break
             }
         case .pipeline(.tick):
+            if pendingPlayerTrack != nil { Task { await applyPlayerTrack() } }
             let phase = engine.session().phase
             if phase == .idle || phase == .sideEnded {
                 if idleSince == nil { idleSince = Date() }
             } else if idleSince != nil {
                 idleSince = nil
             }
+            keepDisplayAwake(phase != .idle && phase != .sideEnded)
         case .pipeline(.recognition): break
         case .trackChanged(let track):
             metadata = nil
@@ -389,6 +425,48 @@ final class AppModel {
         String(format: "#%02X%02X%02X", Int(c.r * 255), Int(c.g * 255), Int(c.b * 255))
     }
 
+    // MARK: - Following Apple Music / Spotify
+
+    private func playerAnnounced(_ track: PlayerTrack, position: Double?) {
+        guard settings.followMusicApps, track.playing else { return }  // pauses: the side detector hears them
+        pendingPlayerTrack = (track, position, Date())
+        Task { await applyPlayerTrack() }
+    }
+
+    /// Hands the announced track to the session once there's music to attach it to (a side
+    /// needs ~1.5 s of sound to start). Retried on each tick for up to 30 s.
+    private func applyPlayerTrack() async {
+        // Ticks retry this; only one attempt at a time.
+        guard let pending = pendingPlayerTrack, !applyingPlayerTrack else { return }
+        applyingPlayerTrack = true
+        defer { applyingPlayerTrack = false }
+        let elapsed = Date().timeIntervalSince(pending.received)
+        guard elapsed < 30 else {
+            pendingPlayerTrack = nil
+            return
+        }
+        // Without a reported position, assume it started when the app announced it.
+        let position = (pending.position ?? 0) + elapsed
+        if await engine.identify(title: pending.track.title, artist: pending.track.artist, position: position) {
+            pendingPlayerTrack = nil
+            append("♫ from \(pending.track.source.rawValue): \(pending.track.artist) — \(pending.track.title)")
+        }
+    }
+
+    /// Names what's playing. Returns a problem to show, or nil on success.
+    func identify(artist: String, title: String, at text: String) async -> String? {
+        var position: Double?
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty {
+            let parts = trimmed.split(separator: ":").map { Double($0) }
+            guard !parts.contains(nil), (1...3).contains(parts.count) else { return "Couldn't read “\(trimmed)” — use 1:23 or 83" }
+            position = parts.compactMap { $0 }.reduce(0) { $0 * 60 + $1 }
+        }
+        let ok = await engine.identify(title: title.trimmingCharacters(in: .whitespaces),
+                                       artist: artist.trimmingCharacters(in: .whitespaces), position: position)
+        return ok ? nil : "Start the music first — Needledrop hasn't heard anything playing yet."
+    }
+
     /// A fresh direction for the album playing (unless its look is pinned).
     func rerollAlbumLook() {
         guard let info = metadata else { return }
@@ -420,12 +498,59 @@ final class AppModel {
         case .googie: .googie
         }
         renderer?.showCover = settings.showCover
+        renderer?.renderResolution = settings.renderResolution
         renderer?.coverModeOverride = switch settings.cover {
         case .auto: nil
         case .living: .living
         case .dissolve: .dissolve
         case .record: .record
         }
+    }
+
+    // MARK: - Recovery
+
+    private func startRecoveryWatch() {
+        // No audio arriving while the source says it's running: restart it.
+        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkForStall() }
+        }
+        // Audio engines often don't survive sleep.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.append("Mac woke up: restarting input")
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    await self.restartInput()
+                }
+            }
+        }
+    }
+
+    private func checkForStall() {
+        let snapshot = pipeline.snapshot()
+        var running = false
+        if case .running = snapshot.sourceStatus { running = true }
+        if stall.update(now: ProcessInfo.processInfo.systemUptime, audioTime: snapshot.features.time, running: running) {
+            append("No audio arriving from \(snapshot.sourceName ?? "the input"): restarting it")
+            Task { await restartInput() }
+        }
+    }
+
+    private func keepDisplayAwake(_ awake: Bool) {
+        if awake, displayAwake == nil {
+            displayAwake = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .userInitiated],
+                                                                 reason: "Showing visuals for the music playing")
+        } else if !awake, let activity = displayAwake {
+            ProcessInfo.processInfo.endActivity(activity)
+            displayAwake = nil
+        }
+    }
+
+    func showSetup() {
+        setup.show(model: self)
     }
 
     func toggleDebugOverlay() {
@@ -441,6 +566,8 @@ final class AppModel {
     }
 
     private func append(_ text: String) {
+        // Recognition errors repeat every matching window; one line is enough.
+        guard log.last?.text != text else { return }
         log.append(LogEntry(text: text))
         if log.count > 100 { log.removeFirst(log.count - 100) }
     }

@@ -53,7 +53,10 @@ struct SettingsView: View {
     // MARK: - Input
 
     private var inputOptions: [(InputSelection, String)] {
-        var options: [(InputSelection, String)] = [(.systemDefault, "System default input")]
+        var options: [(InputSelection, String)] = [
+            (.systemDefault, "System default input"),
+            (.systemAudio, "This Mac's audio (YouTube, Spotify…)"),
+        ]
         options += model.devices.map { (.device(uid: $0.uid, name: $0.name), $0.name) }
         if case .device(let uid, let name) = model.settings.input, !model.devices.contains(where: { $0.uid == uid }) {
             options.append((model.settings.input, "\(name) (disconnected)"))
@@ -89,6 +92,22 @@ struct SettingsView: View {
                     }
                 }
             }
+            if case .replay = model.settings.input {
+                Toggle("Play replay audio through this Mac", isOn: Binding(
+                    get: { model.settings.replayAudible },
+                    set: { audible in
+                        model.settings.replayAudible = audible
+                        Task { await model.restartInput() }
+                    }
+                ))
+            }
+            Toggle("Follow Apple Music and Spotify", isOn: $model.settings.followMusicApps)
+            HStack {
+                Text("Not recognised yet?")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                WhatsPlayingButton()
+            }
             HStack {
                 Button("Replay a Recording…", action: chooseReplayFile)
                 Spacer()
@@ -118,7 +137,7 @@ struct SettingsView: View {
     private func chooseReplayFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
-        panel.message = "Choose a recording to replay as if it were the turntable"
+        panel.message = "Choose a song or side to replay as if it were the turntable (a tagged file is identified from its tags)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.selectInput(.replay(path: url.path)) }
     }
@@ -226,6 +245,10 @@ struct SettingsView: View {
                 Text("How far the speakers lag the turntable. AirPlay to HomePods is usually about 2 s. Tune it until the beat dot and lyrics match what you hear.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Picker("Render resolution", selection: $model.settings.renderResolution) {
+                Text("Auto (sharp on this screen, 480 lines on a TV converter)").tag(VisualsRenderer.RenderResolution.auto)
+                Text("TV (always 480 lines)").tag(VisualsRenderer.RenderResolution.tv)
             }
             Picker("When idle", selection: $model.settings.idleScreen) {
                 Text("Library wall").tag(IdleScreen.libraryWall)

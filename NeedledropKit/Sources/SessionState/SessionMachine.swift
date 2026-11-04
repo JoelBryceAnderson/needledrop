@@ -62,7 +62,8 @@ public struct SessionMachine: Sendable {
 
     private var windowOpenedAt: Double?
     private var nextMatchAt: Double?
-    private var searchingSince: Double?
+    /// When the current search for a track began (side start, or the end of a gap).
+    public private(set) var searchingSince: Double?
     private var trackDuration: Double?
 
     public init(config: SessionConfig = SessionConfig()) {

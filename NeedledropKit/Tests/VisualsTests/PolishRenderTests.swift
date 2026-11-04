@@ -6,7 +6,7 @@ import Testing
 
 /// Milestone 7 visuals, checked on rendered pixels.
 @MainActor
-@Suite struct PolishRenderTests {
+@Suite(.needsGPU) struct PolishRenderTests {
     private let playing = AudioFeatures(bands: BandEnergies(sub: 0.1, bass: 0.1, mids: 0.05, highs: 0.01), musicBandRMS: 0.08)
 
     private func cover(_ rgb: (CGFloat, CGFloat, CGFloat)) -> CGImage {

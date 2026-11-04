@@ -24,6 +24,8 @@ enum InputSelection: Codable, Hashable {
     case systemDefault
     case device(uid: String, name: String)
     case replay(path: String)
+    /// What this Mac is playing (YouTube, a music app…), via a Core Audio process tap.
+    case systemAudio
 }
 
 /// Everything persisted between launches, as one JSON blob in UserDefaults.
@@ -39,6 +41,12 @@ struct AppSettings: Codable, Equatable {
     var lyricAnimation: LyricAnimationChoice = .auto
     var rpm: RPMChoice = .auto
     var idleScreen: IdleScreen = .libraryWall
+    /// Replays play through the Mac's speakers too (never the turntable path).
+    var replayAudible = true
+    /// Take what's playing from Apple Music / Spotify when they're the source.
+    var followMusicApps = true
+    var setupCompleted = false
+    var renderResolution: VisualsRenderer.RenderResolution = .auto
     var artDirector = ArtDirectorSettings()
     var showCover = true
     var showNowPlaying = true
@@ -66,6 +74,10 @@ struct AppSettings: Codable, Equatable {
         lyricAnimation = (try? c.decodeIfPresent(LyricAnimationChoice.self, forKey: .lyricAnimation)) ?? d.lyricAnimation
         rpm = (try? c.decodeIfPresent(RPMChoice.self, forKey: .rpm)) ?? d.rpm
         idleScreen = (try? c.decodeIfPresent(IdleScreen.self, forKey: .idleScreen)) ?? d.idleScreen
+        replayAudible = try c.decodeIfPresent(Bool.self, forKey: .replayAudible) ?? d.replayAudible
+        followMusicApps = try c.decodeIfPresent(Bool.self, forKey: .followMusicApps) ?? d.followMusicApps
+        setupCompleted = try c.decodeIfPresent(Bool.self, forKey: .setupCompleted) ?? d.setupCompleted
+        renderResolution = (try? c.decodeIfPresent(VisualsRenderer.RenderResolution.self, forKey: .renderResolution)) ?? d.renderResolution
         artDirector = (try? c.decodeIfPresent(ArtDirectorSettings.self, forKey: .artDirector)) ?? d.artDirector
         showCover = try c.decodeIfPresent(Bool.self, forKey: .showCover) ?? d.showCover
         showNowPlaying = try c.decodeIfPresent(Bool.self, forKey: .showNowPlaying) ?? d.showNowPlaying

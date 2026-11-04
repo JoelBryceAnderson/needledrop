@@ -98,3 +98,28 @@ private struct ScriptCatalog: TrackCatalog {
 
     func entry(for match: TrackMatch) -> CatalogEntry? { entries[match.identity] }
 }
+
+import AVFoundation
+
+extension ReplayScript {
+    /// For a song file that carries its own title and artist tags (m4a, mp3, aiff…): the
+    /// whole file is that track, on every loop. Replaying it then behaves like the real
+    /// thing after a Shazam match — online metadata, artwork and lyrics — with no signing.
+    /// `gap` is the silence FileReplaySource plays between loops.
+    public static func fromTags(of url: URL, loops: Int = 40, gap: Double = 12) async -> ReplayScript? {
+        let asset = AVURLAsset(url: url)
+        guard let metadata = try? await asset.load(.commonMetadata),
+              let seconds = try? await asset.load(.duration).seconds, seconds.isFinite, seconds > 5 else { return nil }
+        func string(_ id: AVMetadataIdentifier) async -> String? {
+            let value = try? await AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: id).first?.load(.stringValue)
+            return value.flatMap { $0.trimmingCharacters(in: .whitespaces).isEmpty ? nil : $0 }
+        }
+        guard let title = await string(.commonIdentifierTitle),
+              let artist = await string(.commonIdentifierArtist) else { return nil }
+        let tracks = (0..<loops).map { k in
+            let start = Double(k) * (seconds + gap)
+            return Track(start: start, end: start + seconds, title: title, artist: artist)
+        }
+        return ReplayScript(tracks: tracks)
+    }
+}

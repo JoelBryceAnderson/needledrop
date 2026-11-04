@@ -53,3 +53,30 @@ import Testing
         }
     }
 }
+
+@Suite struct ManualIdentifyTests {
+    @Test(.timeLimit(.minutes(1)))
+    func namingATrackByHandWorksLikeAMatch() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("needledrop-\(UUID()).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let truth = try SyntheticSide.demo().write(to: url)
+        // A recognizer that never answers (no Shazam).
+        let engine = Engine(recognizer: ScriptedRecognizer(segments: []), metadata: nil)
+        #expect(await engine.identify(title: "Too early", artist: "Nobody") == false)  // nothing playing yet
+        try await engine.start(source: FileReplaySource(url: url, speed: 10, trailingSilence: 0))
+
+        var named = false
+        for await event in engine.events {
+            if case .pipeline(.tick(let time, _)) = event, !named, time > truth.tracks[0].start + 8 {
+                named = await engine.identify(title: "Paper Weather", artist: "The Creases")
+                let session = engine.session()
+                #expect(session.track?.title == "Paper Weather" && session.identifiedByHand)
+                // Assumed to have started with the music: position ≈ time since the side began.
+                let position = try #require(session.clock?.position(at: time))
+                #expect(abs(position - (time - truth.tracks[0].start)) < 0.6, "position \(position)")
+                await engine.stop()
+            }
+        }
+        #expect(named)
+    }
+}

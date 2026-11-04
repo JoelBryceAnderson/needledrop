@@ -18,6 +18,8 @@ public struct SessionSnapshot: Sendable {
     public var lyrics: Lyrics?
     public var clock: PlaybackClock?
     public var unidentified = false
+    /// The current track was named by hand (nothing will re-confirm it).
+    public var identifiedByHand = false
     public var isRecognizing = false
     public var matchCount = 0
     public var lastRecognitionError: String?
@@ -121,6 +123,20 @@ public actor Engine {
         try pipeline.start(source: source)
     }
 
+    /// Names the track playing now, for when recognition can't (no Shazam, or a pressing
+    /// it doesn't know). `position` nil assumes the song began when this stretch of music did.
+    /// Returns false if no music is playing.
+    @discardableResult
+    public func identify(title: String, artist: String, position: Double? = nil) -> Bool {
+        guard machine.phase == .recognizing || machine.phase == .playing else { return false }
+        let began = machine.clock?.trackStartTime ?? machine.searchingSince ?? machine.sideStart ?? lastTick
+        var match = TrackMatch(title: title, artist: artist)
+        match.position = position ?? max(0, lastTick - began)
+        apply(.match(match, at: lastTick))
+        shared.withLock { $0.identifiedByHand = true }
+        return true
+    }
+
     public nonisolated var isRecording: Bool { archiver?.recorder.isRecording ?? false }
 
     public func updateArchiveSettings(_ settings: ArchiveSettings) {
@@ -184,6 +200,7 @@ public actor Engine {
                 shared.withLock {
                     $0.metadata = nil
                     $0.lyrics = nil
+                    $0.identifiedByHand = false
                 }
                 continuation.yield(.trackChanged(track))
                 if let track { resolveMetadata(for: track) }

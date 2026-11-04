@@ -8,6 +8,17 @@ struct NeedledropApp: App {
         Settings {
             SettingsView(model: delegate.model)
         }
+        Window("What's Playing?", id: "whats-playing") {
+            WhatsPlayingView(model: delegate.model)
+        }
+        .windowResizability(.contentSize)
+        .commands {
+            CommandMenu("Controls") {
+                WhatsPlayingButton()
+                    .keyboardShortcut("k", modifiers: .command)
+                Button("Set Up Turntable…") { delegate.model.showSetup() }
+            }
+        }
         MenuBarExtra {
             MenuBarContent(model: delegate.model)
         } label: {

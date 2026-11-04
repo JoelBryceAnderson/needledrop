@@ -86,7 +86,22 @@ public enum VisualsError: Error, CustomStringConvertible {
 @MainActor
 public final class VisualsRenderer: NSObject, MTKViewDelegate {
     public let device: any MTLDevice
-    public var internalHeight = 480
+    public enum RenderResolution: String, Sendable, Codable, CaseIterable {
+        /// 480 lines on a composite/standard-definition output, the display's own
+        /// resolution (up to 1080 lines) anywhere else.
+        case auto
+        /// Always 480 lines, as the TV over composite gets it.
+        case tv
+    }
+
+    public var renderResolution: RenderResolution = .auto
+    /// Lines the scene is rendered at this frame (see `renderResolution`).
+    public private(set) var internalHeight = 480
+
+    private func sceneHeight(for target: any MTLTexture) -> Int {
+        if renderResolution == .tv || target.height <= 600 { return 480 }
+        return min(1080, target.height)
+    }
     /// Forces a background for every album (the Theme setting); nil follows each album's
     /// art direction.
     public var themeOverride: LookStyle.Background?
@@ -271,7 +286,11 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         let frame = director.update(at: time, active: input.active)
         if frame.previousReleased, slots.count > 1 { slots.removeLast() }
 
-        let height = internalHeight
+        let height = sceneHeight(for: target)
+        if height != internalHeight {
+            internalHeight = height
+            textCache.removeAll()  // lyrics are rasterised for the resolution
+        }
         let width = max(1, Int((Double(height) * Double(target.width) / Double(max(1, target.height))).rounded()))
         let scene = sceneTarget(width: width, height: height)
 

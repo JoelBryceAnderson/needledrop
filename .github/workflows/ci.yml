@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          system_profiler SPDisplaysDataType | grep -E "Chipset|Metal" || true
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: NeedledropKit/.build
+          key: spm-${{ runner.os }}-${{ hashFiles('NeedledropKit/Package.resolved') }}
+
+      # GPU-dependent suites (renderer, shader validator) skip themselves when the
+      # runner has no Metal device.
+      - name: Test NeedledropKit
+        run: swift test --package-path NeedledropKit
+
+      - name: Build app (unsigned)
+        run: |
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project Needledrop.xcodeproj -scheme Needledrop -configuration Debug \
+            -derivedDataPath .build/xcode CODE_SIGNING_ALLOWED=NO build

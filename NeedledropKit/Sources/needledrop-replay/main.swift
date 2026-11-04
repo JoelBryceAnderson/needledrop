@@ -25,7 +25,7 @@ let usage = """
       needledrop-replay validate-shader <body.metal>
                                                    Run a custom-scene body through the art-director sandbox
       needledrop-replay devices                    List audio input devices
-      needledrop-replay listen [--device UID] [options]
+      needledrop-replay listen [--device UID | --system] [--seconds N] [options]
                                                    Live input, prints events and a level meter
 
     DETECTOR OPTIONS
@@ -193,7 +193,7 @@ case "synth":
     // metadata, artwork and lyrics with nothing fetched and nothing licensed.
     let directory = url.deletingLastPathComponent()
     let base = url.deletingPathExtension().lastPathComponent
-    let album = "Paper Weather", artist = "The Creases"
+    let album = "Crease Patterns", artist = "The Valley Fold Society"
     let songs: [(title: String, lyrics: [(Double, String)])] = [
         ("Paper Weather", [(2, "Paper weather in the morning"), (5.5, "Folding light along the floor"),
                            (9, "Every crease a little warning"), (12.5, "Every edge an open door"),
@@ -310,9 +310,24 @@ case "devices":
 
 case "listen":
     let uid = option("--device")
+    let limit = option("--seconds").flatMap(Double.init)
+    let system = arguments.contains("--system")
     let config = detectorConfig()
-    guard await MicrophoneAccess.request() else { fail("microphone access denied (System Settings › Privacy › Microphone)") }
-    try await runLive(source: LiveInputSource(deviceUID: uid), config: config, stopWhenFinished: false)
+    let source: any AudioSource
+    if system {
+        source = SystemAudioSource()  // what this Mac is playing
+    } else {
+        guard await MicrophoneAccess.request() else { fail("microphone access denied (System Settings › Privacy › Microphone)") }
+        source = LiveInputSource(deviceUID: uid)
+    }
+    if let limit {
+        _ = Task {
+            try await Task.sleep(for: .seconds(limit))
+            print("")
+            exit(0)
+        }
+    }
+    try await runLive(source: source, config: config, stopWhenFinished: false)
 
 default:
     print(usage)

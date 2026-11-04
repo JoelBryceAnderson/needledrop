@@ -141,7 +141,7 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
 }
 
 @MainActor
-@Suite struct RendererTests {
+@Suite(.needsGPU) struct RendererTests {
     /// Renders one frame and returns RGBA8 pixels.
     private func render(_ renderer: VisualsRenderer, input: VisualInput, frames: Int = 90,
                         width: Int = 320, height: Int = 180) -> [UInt8] {

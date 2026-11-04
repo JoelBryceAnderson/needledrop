@@ -78,7 +78,8 @@ public actor MetadataResolver {
 
     /// Never throws: falls back to what the match itself carries.
     public func resolve(_ match: TrackMatch) async -> TrackMetadata {
-        let key = match.identity
+        // v2: earlier versions could match a same-titled song by another artist; ignore them.
+        let key = "v2|" + match.identity
         if let cached = memory[key] ?? readCache(key) {
             memory[key] = cached
             return cached
@@ -97,14 +98,28 @@ public actor MetadataResolver {
         return resolved
     }
 
-    /// Artwork bytes, cached per album (or per URL when there's no album ID).
+    /// Artwork bytes, cached per album (or per URL when there's no album ID). iTunes
+    /// artwork comes at 3000 px (falling back to 1200 px if that size isn't served).
     public func artwork(for metadata: TrackMetadata) async -> Data? {
         guard let url = metadata.artworkURL else { return nil }
-        let file = cacheDirectory.appendingPathComponent("artwork/\(Self.hash(metadata.collectionID ?? url.absoluteString)).img")
+        let file = cacheDirectory.appendingPathComponent("artwork/3000-\(Self.hash(metadata.collectionID ?? url.absoluteString)).img")
         if let data = try? Data(contentsOf: file) { return data }
-        guard let data = try? await http.get(url, headers: userAgentHeader) else { return nil }
-        try? data.write(to: file, options: .atomic)
-        return data
+        for candidate in Self.artworkCandidates(url) {
+            if let data = try? await http.get(candidate, headers: userAgentHeader), !data.isEmpty {
+                try? data.write(to: file, options: .atomic)
+                return data
+            }
+        }
+        return nil
+    }
+
+    /// Largest first. Older cached metadata may still name the 1200 px rendition.
+    static func artworkCandidates(_ url: URL) -> [URL] {
+        let s = url.absoluteString
+        guard s.contains("1200x1200bb") || s.contains("100x100bb") else { return [url] }
+        let large = s.replacingOccurrences(of: "1200x1200bb", with: "3000x3000bb").replacingOccurrences(of: "100x100bb", with: "3000x3000bb")
+        let medium = large.replacingOccurrences(of: "3000x3000bb", with: "1200x1200bb")
+        return [large, medium].compactMap(URL.init(string:))
     }
 
     // MARK: - iTunes API
@@ -125,19 +140,21 @@ public actor MetadataResolver {
         ]
         let response = try JSONDecoder().decode(ITunesResponse.self, from: try await http.get(components.url!, headers: userAgentHeader))
         let wantTitle = Self.normalize(title), wantArtist = Self.normalize(artist)
-        // Prefer an exact title + artist match, then anything whose title matches,
-        // preferring albums over compilations (earliest release).
+        // Both the title and the artist must match (a same-named song by someone else is
+        // the wrong record). Then prefer exact matches and the original album over
+        // compilations, earliest release first.
         let songs = response.results.filter { $0.kind == "song" }
-        let scored = songs.map { song -> (Int, ITunesResult) in
+        let scored = songs.compactMap { song -> (Int, ITunesResult)? in
             let t = Self.normalize(song.trackName ?? "")
             let a = Self.normalize(song.artistName ?? "")
-            var score = 0
-            if t == wantTitle { score += 4 } else if t.hasPrefix(wantTitle) || wantTitle.hasPrefix(t) { score += 2 }
-            if a == wantArtist { score += 3 } else if a.contains(wantArtist) || wantArtist.contains(a) { score += 1 }
-            if song.collectionArtistName == nil || song.collectionArtistName == song.artistName { score += 1 }
-            return (score, song)
+            guard !t.isEmpty, !a.isEmpty, !wantTitle.isEmpty, !wantArtist.isEmpty else { return nil }
+            let titleScore = t == wantTitle ? 4 : (t.hasPrefix(wantTitle) || wantTitle.hasPrefix(t) ? 2 : 0)
+            let artistScore = a == wantArtist ? 3 : (a.contains(wantArtist) || wantArtist.contains(a) ? 1 : 0)
+            guard titleScore > 0, artistScore > 0 else { return nil }
+            let original = song.collectionArtistName == nil || song.collectionArtistName == song.artistName ? 1 : 0
+            return (titleScore + artistScore + original, song)
         }
-        let best = scored.filter { $0.0 >= 5 }.max { l, r in
+        let best = scored.max { l, r in
             l.0 != r.0 ? l.0 < r.0 : (l.1.releaseDate ?? "") > (r.1.releaseDate ?? "")
         }
         return best.map { Self.metadata($0.1) }
@@ -161,7 +178,7 @@ public actor MetadataResolver {
 
     /// iTunes serves any size by rewriting the dimensions in the URL.
     static func highResolutionArtwork(_ url: String) -> URL? {
-        URL(string: url.replacingOccurrences(of: "100x100bb", with: "1200x1200bb"))
+        URL(string: url.replacingOccurrences(of: "100x100bb", with: "3000x3000bb"))
     }
 
     /// "Rumours (Remastered)" → "Rumours"; we want the record's name, not the reissue's.
@@ -170,11 +187,16 @@ public actor MetadataResolver {
                                   with: "", options: [.regularExpression, .caseInsensitive])
     }
 
+    /// Lowercased, bracketed asides ("(Remastered)") and punctuation dropped, "&" read as
+    /// "and", and a leading "The" ignored ("The Beatles" = "Beatles").
     static func normalize(_ s: String) -> String {
-        s.lowercased()
+        var n = s.lowercased()
             .replacingOccurrences(of: #"\s*[\(\[].*?[\)\]]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&", with: " and ")
             .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespaces)
+        if n.hasPrefix("the ") { n.removeFirst(4) }
+        return n
     }
 
     // MARK: - Disk cache

@@ -15,6 +15,8 @@ struct MenuBarContent: View {
             .keyboardShortcut("l", modifiers: [.command, .control])
         Toggle("Album Art", isOn: Binding(get: { model.settings.showCover }, set: { _ in model.toggleCover() }))
             .keyboardShortcut("a", modifiers: [.command, .control])
+        WhatsPlayingButton()
+        Button("Set Up Turntable…") { model.showSetup() }
         Button("Re-roll Album Look") { model.rerollAlbumLook() }
             .disabled(model.currentAlbumKey == nil)
         SettingsLink { Text("Settings…") }
