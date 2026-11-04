@@ -28,6 +28,7 @@ struct WhatsPlayingView: View {
         }
         .formStyle(.grouped)
         .frame(width: 420)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func set() {
@@ -41,6 +42,18 @@ struct WhatsPlayingView: View {
                 message = nil
                 dismiss()
             }
+        }
+    }
+}
+
+/// Opens the What's Playing window (menu bar, Controls menu, Settings).
+struct WhatsPlayingButton: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("What's Playing…") {
+            openWindow(id: "whats-playing")
+            NSApp.activate()
         }
     }
 }

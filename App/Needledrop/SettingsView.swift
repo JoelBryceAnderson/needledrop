@@ -102,6 +102,12 @@ struct SettingsView: View {
                 ))
             }
             HStack {
+                Text("Not recognised yet?")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                WhatsPlayingButton()
+            }
+            HStack {
                 Button("Replay a Recording…", action: chooseReplayFile)
                 Spacer()
                 Button("Refresh Devices") { model.refreshDevices() }

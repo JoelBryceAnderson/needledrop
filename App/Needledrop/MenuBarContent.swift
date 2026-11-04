@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MenuBarContent: View {
     let model: AppModel
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Text(model.log.last?.text ?? "Starting…")
@@ -16,11 +15,7 @@ struct MenuBarContent: View {
             .keyboardShortcut("l", modifiers: [.command, .control])
         Toggle("Album Art", isOn: Binding(get: { model.settings.showCover }, set: { _ in model.toggleCover() }))
             .keyboardShortcut("a", modifiers: [.command, .control])
-        Button("What's Playing…") {
-            openWindow(id: "whats-playing")
-            NSApp.activate()
-        }
-        .keyboardShortcut("w", modifiers: [.command, .control])
+        WhatsPlayingButton()
         Button("Re-roll Album Look") { model.rerollAlbumLook() }
             .disabled(model.currentAlbumKey == nil)
         SettingsLink { Text("Settings…") }

@@ -12,6 +12,12 @@ struct NeedledropApp: App {
             WhatsPlayingView(model: delegate.model)
         }
         .windowResizability(.contentSize)
+        .commands {
+            CommandMenu("Controls") {
+                WhatsPlayingButton()
+                    .keyboardShortcut("k", modifiers: .command)
+            }
+        }
         MenuBarExtra {
             MenuBarContent(model: delegate.model)
         } label: {
