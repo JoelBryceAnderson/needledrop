@@ -212,6 +212,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         var screenCentre: SIMD2<Double>?
         /// Dark (1) or light (2) ink, chosen once against the background where it's set.
         var tone: Float = 0
+        /// The caption once the song is under way: one line, "Title · Artist", smaller.
+        var compactTexture: (any MTLTexture)?
+        var compactSize: SIMD2<Double>?
         /// Set on a theme other than paper: where it sits (background scene units), not on a crease.
         var fixed: (centre: SIMD2<Double>, angle: Double)?
     }
@@ -388,7 +391,10 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         // The cover lives in the now-playing strip, small and always there; the choreography
         // moves the camera and the folds around it.
         if coverInStrip {
-            let strip = Self.stripCover(aspect: aspect)
+            // Tuck the strip down a few seconds into the track.
+            let tucked = captionSlot.map { time - $0.enteredAt > Self.compactAfter } ?? true
+            stripCompact = min(1, max(0, stripCompact + (tucked ? dt : -dt * 2) / 0.9))
+            let strip = stripCover(aspect: aspect)
             shot.cover = strip
             shot.targetCover = strip
         }
@@ -442,7 +448,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(previous?.mask ?? placeholder, index: 3)
             encoder.setFragmentTexture(lyricSlots.last?.texture ?? placeholder, index: 4)
             encoder.setFragmentTexture(lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2].texture : placeholder, index: 5)
-            encoder.setFragmentTexture(captionSlot?.texture ?? placeholder, index: 6)
+            encoder.setFragmentTexture(stripText.texture ?? placeholder, index: 6)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
             encoder.endEncoding()
         }
@@ -471,11 +477,27 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// The now-playing strip, bottom left: the cover (frame heights) and the gap to the words.
     private static let stripMargin = 0.05
     private static let stripCoverSize = 0.15
+    /// Once the song is under way the strip tucks down: a smaller cover, one line of words.
+    private static let compactCoverSize = 0.075
+    private static let compactAfter = 6.0
+    /// 0 = the strip as a track starts, 1 = tucked down (eased).
+    private var stripCompact = 0.0
+    private var stripCompactEased: Double { stripCompact * stripCompact * (3 - 2 * stripCompact) }
+    private var stripCoverSizeNow: Double {
+        Self.stripCoverSize + (Self.compactCoverSize - Self.stripCoverSize) * stripCompactEased
+    }
+
+    /// The caption texture showing now, and its size: the full one, then the one-line one.
+    private var stripText: (texture: (any MTLTexture)?, size: SIMD2<Double>?) {
+        guard let slot = captionSlot else { return (nil, nil) }
+        if stripCompact > 0.5, let compact = slot.compactTexture { return (compact, slot.compactSize) }
+        return (slot.texture, slot.size)
+    }
     private static let stripGap = 0.03
 
-    static func stripCover(aspect: Double) -> CoverPose {
-        CoverPose(x: (stripMargin + stripCoverSize / 2) / aspect, y: 1 - stripMargin - stripCoverSize / 2,
-                  size: stripCoverSize)
+    func stripCover(aspect: Double) -> CoverPose {
+        let size = stripCoverSizeNow
+        return CoverPose(x: (Self.stripMargin + size / 2) / aspect, y: 1 - Self.stripMargin - size / 2, size: size)
     }
 
     /// Text sizes to try, widest first (scene units: frame height = 1): (max width, font, lines).
@@ -601,6 +623,18 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                 // Light words on the strip's dark backing.
                 captionSlot = PrintedSlot(id: 0, captionID: caption.id, texture: tex, size: size, spot: nil, enteredAt: time,
                                           screenCentre: corner, tone: 2)
+                // And the one-line version for once the song is under way.
+                let artist = caption.subtitle.components(separatedBy: "  ·  ").first ?? caption.subtitle
+                let line = artist.isEmpty ? currentStyle.apply(case: caption.title) : "\(currentStyle.apply(case: caption.title))  ·  \(artist)"
+                let compactScale = 2 * Double(sceneHeight)
+                if let compact = LyricRasterizer.image(for: line, fontSize: CGFloat(0.03 * compactScale),
+                                                       maxWidth: CGFloat(0.9 * compactScale), maxLines: 1,
+                                                       font: currentStyle.font, weight: .regular),
+                   let compactTexture = texture(compact) {
+                    captionSlot?.compactTexture = compactTexture
+                    captionSlot?.compactSize = SIMD2(Double(compact.width), Double(compact.height)) / compactScale
+                }
+                stripCompact = 0
             }
         } else if input.caption == nil, let caption = captionSlot, caption.exitedAt == nil {
             captionSlot?.exitedAt = time
@@ -826,8 +860,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// The title and artist sit beside the strip's cover, centred on it (or in its place
     /// when the cover is hidden).
     private func stripCaptionCentre(size: SIMD2<Double>, hasArt: Bool) -> SIMD2<Double> {
-        let left = Self.stripMargin + (hasArt ? Self.stripCoverSize + Self.stripGap : 0)
-        let centreY = 1 - Self.stripMargin - (hasArt ? Self.stripCoverSize / 2 : size.y / 2)
+        let cover = stripCoverSizeNow
+        let left = Self.stripMargin + (hasArt ? cover + Self.stripGap * (1 - 0.4 * stripCompactEased) : 0)
+        let centreY = 1 - Self.stripMargin - (hasArt ? cover / 2 : size.y / 2)
         return SIMD2(left + size.x / 2, centreY)
     }
 
@@ -835,7 +870,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// often arrives before the artwork does.
     private func captionFrame(_ slot: PrintedSlot, aspect: Double) -> (centre: SIMD2<Double>, size: SIMD2<Double>) {
         if coverInStrip {
-            return (stripCaptionCentre(size: slot.size, hasArt: slots.first?.art != nil && showCover), slot.size)
+            let size = stripText.size ?? slot.size
+            return (stripCaptionCentre(size: size, hasArt: slots.first?.art != nil && showCover), size)
         }
         return (slot.screenCentre ?? SIMD2(0.06 + slot.size.x / 2, 0.06 + slot.size.y / 2), slot.size)
     }
@@ -865,7 +901,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         uniforms.inkWords = SIMD4(n0, r0, n1, r1)
         if let caption = captionSlot {
             let f = captionFrame(caption, aspect: layout.aspect)
-            let o = captionOpacity(caption, time: time)
+            // The words dip out and back in as they switch to the one-line strip.
+            let dip = caption.compactTexture == nil ? 1 : abs(1 - 2 * stripCompact)
+            let o = captionOpacity(caption, time: time) * dip
             uniforms.ink2a = SIMD4(Float(f.centre.x), Float(f.centre.y), Float(f.size.x / 2), Float(f.size.y / 2))
             uniforms.ink2b = SIMD4(0, Float(o), blur(o, exiting: time > caption.enteredAt + Self.inkIn), caption.tone)
         }
