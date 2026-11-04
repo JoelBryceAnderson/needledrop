@@ -6,7 +6,7 @@ import Testing
         await ShaderValidator.validate(body: body)
     }
 
-    @Test func acceptsAReasonableScene() async {
+    @Test(.needsRealGPUTiming) func acceptsAReasonableScene() async {
         let body = """
             float2 p = (uv - 0.5) * float2(aspect, 1.0);
             float r = length(p) - 0.25 * (1.0 + 0.3 * bass);
@@ -37,7 +37,7 @@ import Testing
         #expect(await outcome("float x = 0; while (x < 1) { x += 0.1; } return float3(x) * uv.x;") != .valid)
     }
 
-    @Test func rejectsShadersTooSlowForTheFrameBudget() async {
+    @Test(.needsRealGPUTiming) func rejectsShadersTooSlowForTheFrameBudget() async {
         let body = """
             float v = 0.0;
             for (int i = 0; i < 4000; i++) { v += fbm(uv * float(i % 7 + 1) + time); }

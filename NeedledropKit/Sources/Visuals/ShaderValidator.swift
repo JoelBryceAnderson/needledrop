@@ -14,7 +14,9 @@ public enum ShaderValidator {
     /// Constructs a fragment body has no business using (resources, preprocessor,
     /// unbounded loops).
     static let banned = ["#", "device ", "threadgroup", "texture", "sampler", "atomic", "while", "do {", "goto", "[["]
-    public static let compileTimeout: Duration = .seconds(8)
+    /// Catches shaders that hang the compiler; generous, since the whole scene library is
+    /// compiled with them and a slow machine shouldn't reject a valid one.
+    public static let compileTimeout: Duration = .seconds(20)
     /// At the full internal resolution; the real budget is ~16 ms for everything.
     public static let frameBudget = 0.008
 
