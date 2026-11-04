@@ -79,7 +79,7 @@ public actor MetadataResolver {
     /// Never throws: falls back to what the match itself carries.
     public func resolve(_ match: TrackMatch) async -> TrackMetadata {
         // v2: earlier versions could match a same-titled song by another artist; ignore them.
-        let key = "v2|" + match.identity
+        let key = "v3|" + match.identity
         if let cached = memory[key] ?? readCache(key) {
             memory[key] = cached
             return cached
@@ -160,10 +160,11 @@ public actor MetadataResolver {
         let songs = response.results.filter { $0.kind == "song" }
         let scored = songs.compactMap { song -> (Int, ITunesResult)? in
             let t = Self.normalize(song.trackName ?? "")
-            let a = Self.normalize(song.artistName ?? "")
-            guard !t.isEmpty, !a.isEmpty, !wantTitle.isEmpty, !wantArtist.isEmpty else { return nil }
+            guard !t.isEmpty, !wantTitle.isEmpty, !wantArtist.isEmpty else { return nil }
             let titleScore = t == wantTitle ? 4 : (t.hasPrefix(wantTitle) || wantTitle.hasPrefix(t) ? 2 : 0)
-            let artistScore = a == wantArtist ? 3 : (a.contains(wantArtist) || wantArtist.contains(a) ? 1 : 0)
+            // The track's credit, or the album's (a duet album may credit the pair either way).
+            let artistScore = max(Self.artistMatch(artist, song.artistName ?? ""),
+                                  Self.artistMatch(artist, song.collectionArtistName ?? ""))
             guard titleScore > 0, artistScore > 0 else { return nil }
             let original = song.collectionArtistName == nil || song.collectionArtistName == song.artistName ? 1 : 0
             return (titleScore + artistScore + original, song)
@@ -203,8 +204,11 @@ public actor MetadataResolver {
 
     /// Lowercased, bracketed asides ("(Remastered)") and punctuation dropped, "&" read as
     /// "and", and a leading "The" ignored ("The Beatles" = "Beatles").
+    /// Lowercased, accents and stylised letters folded ("JAŸ-Z" → "jay z", "Beyoncé" →
+    /// "beyonce"), bracketed parts dropped, "&" as "and", punctuation as spaces.
     static func normalize(_ s: String) -> String {
-        var n = s.lowercased()
+        var n = s.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US"))
+            .lowercased()
             .replacingOccurrences(of: #"\s*[\(\[].*?[\)\]]"#, with: "", options: .regularExpression)
             .replacingOccurrences(of: "&", with: " and ")
             .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
@@ -223,6 +227,27 @@ public actor MetadataResolver {
     private func writeCache(_ metadata: TrackMetadata, _ key: String) {
         let file = cacheDirectory.appendingPathComponent("metadata/\(Self.hash(key)).json")
         try? JSONEncoder().encode(metadata).write(to: file, options: .atomic)
+    }
+
+    /// The names in a credit ("JAY-Z & Kanye West", "Kanye West, JAY-Z feat. Frank Ocean").
+    static func artistNames(_ credit: String) -> Set<String> {
+        let folded = credit.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "en_US")).lowercased()
+        let parts = folded.replacingOccurrences(of: #"\s+(feat\.?|ft\.?|featuring|with|x|and|vs\.?)\s+|\s*[&,/+]\s*"#,
+                                                with: "|", options: .regularExpression)
+            .split(separator: "|")
+        return Set(parts.map { normalize(String($0)) }.filter { !$0.isEmpty })
+    }
+
+    /// 3: the same credit; 2: the same artists in another order or form; 1: they share an
+    /// artist; 0: different artists.
+    public static func artistMatch(_ wanted: String, _ found: String) -> Int {
+        let a = normalize(wanted), b = normalize(found)
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        if a == b { return 3 }
+        let x = artistNames(wanted), y = artistNames(found)
+        if !x.isEmpty, x == y { return 2 }
+        if !x.isDisjoint(with: y) || a.contains(b) || b.contains(a) { return 1 }
+        return 0
     }
 
     private static func hash(_ s: String) -> String {

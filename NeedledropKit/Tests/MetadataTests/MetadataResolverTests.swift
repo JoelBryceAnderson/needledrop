@@ -109,3 +109,16 @@ private let searchJSON = """
         #expect(http.count == 2)  // one lookup, one image
     }
 }
+
+@Suite struct ArtistMatchTests {
+    @Test func creditsMatchWhateverTheOrderOrStyling() {
+        // Apple Music vs the iTunes catalogue for the same record.
+        #expect(MetadataResolver.artistMatch("JAY-Z & Kanye West", "Kanye West & JAŸ-Z") == 2)
+        #expect(MetadataResolver.artistMatch("Beyonce", "Beyoncé") == 3)
+        #expect(MetadataResolver.artistMatch("Childish Gambino", "Childish Gambino") == 3)
+        #expect(MetadataResolver.artistMatch("Kanye West", "Kanye West, JAY-Z feat. Frank Ocean") == 1)
+        // Still no match for someone else's song of the same name.
+        #expect(MetadataResolver.artistMatch("Fleetwood Mac", "The Corrs") == 0)
+        #expect(MetadataResolver.artistMatch("JAY-Z & Kanye West", "Otis Redding") == 0)
+    }
+}
