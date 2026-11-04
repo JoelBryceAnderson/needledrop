@@ -25,7 +25,7 @@ final class AppModel {
     var settings: AppSettings {
         didSet {
             settings.save()
-            renderer?.mode = settings.visualMode
+            applyVisualSettings()
             if settings.archive != oldValue.archive {
                 let archive = settings.archive
                 Task { await engine.updateArchiveSettings(archive) }
@@ -34,8 +34,6 @@ final class AppModel {
     }
     /// Nil only if Metal is unavailable; the stage then stays black.
     let renderer: VisualsRenderer?
-    /// When the current track's caption should start showing.
-    private(set) var nowPlayingSince: Date?
     private(set) var engine: Engine
     var pipeline: ListeningPipeline { engine.pipeline }
     /// Current track's metadata and artwork, for the now-playing panel.
@@ -62,7 +60,7 @@ final class AppModel {
             renderer = nil
             log.append(LogEntry(text: "Visuals unavailable: \(error)"))
         }
-        renderer?.mode = settings.visualMode
+        applyVisualSettings()
         renderer?.inputProvider = { [weak self] in self?.visualInput() ?? VisualInput() }
     }
 
@@ -73,6 +71,10 @@ final class AppModel {
         let session = engine.session()
         var input = VisualInput(features: features, beatAge: beatAge,
                                 active: session.phase != .idle && session.phase != .sideEnded)
+        if settings.showNowPlaying, let info = metadata {
+            input.caption = CaptionFrame(id: "\(info.artist)|\(info.title)", title: info.title,
+                                         subtitle: [info.artist, info.album].compactMap { $0 }.joined(separator: "  ·  "))
+        }
         if settings.showLyrics, let lyrics = session.lyrics, lyrics.isSynced, !lyrics.instrumental,
            let clock = session.clock, clock.confidence(at: features.time) > 0.15 {
             input.lyricsAvailable = true
@@ -110,6 +112,7 @@ final class AppModel {
 
         let source: any AudioSource
         var recognizer: any TrackRecognizer = ShazamRecognizer()
+        var catalog: (any TrackCatalog)?
         switch settings.input {
         case .systemDefault, .device:
             microphoneDenied = !(await MicrophoneAccess.request())
@@ -125,6 +128,7 @@ final class AppModel {
             do {
                 if let script = try ReplayScript.load(for: url) {
                     recognizer = script.recognizer()
+                    catalog = script.catalog(directory: url.deletingLastPathComponent())
                     append("Using \(ReplayScript.sidecarURL(for: url).lastPathComponent) instead of Shazam")
                 }
             } catch {
@@ -133,7 +137,8 @@ final class AppModel {
         }
 
         let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver,
-                            lyrics: lyricsProvider, archiver: Archiver(settings: settings.archive, library: library))
+                            lyrics: lyricsProvider, archiver: Archiver(settings: settings.archive, library: library),
+                            catalog: catalog)
         self.engine = engine
         eventTask = Task { [weak self] in
             for await event in engine.events {
@@ -211,7 +216,6 @@ final class AppModel {
         case .trackChanged(let track):
             metadata = nil
             artwork = nil
-            nowPlayingSince = nil
             if let track {
                 append("♫ \(track.artist) — \(track.title)")
             } else if engine.session().unidentified {
@@ -222,7 +226,6 @@ final class AppModel {
         case .metadata(let info, let data):
             metadata = info
             artwork = data.flatMap(NSImage.init(data:))
-            nowPlayingSince = Date()
             updateLook(for: info)
         case .lyrics(let lyrics):
             if let lyrics, lyrics.instrumental {
@@ -255,8 +258,21 @@ final class AppModel {
         }
     }
 
+    private func applyVisualSettings() {
+        renderer?.background = settings.background
+        renderer?.showCover = settings.showCover
+    }
+
     func toggleDebugOverlay() {
         settings.showDebugOverlay.toggle()
+    }
+
+    func toggleLyrics() {
+        settings.showLyrics.toggle()
+    }
+
+    func toggleCover() {
+        settings.showCover.toggle()
     }
 
     private func append(_ text: String) {

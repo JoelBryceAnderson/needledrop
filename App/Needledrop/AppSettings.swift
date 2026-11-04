@@ -17,7 +17,8 @@ struct AppSettings: Codable, Equatable {
     var displayID: UInt32?
     var displayName: String?
     var fullScreen = true
-    var visualMode: VisualMode = .auto
+    var background: BackgroundStyle = .paper
+    var showCover = true
     var showNowPlaying = true
     var showDebugOverlay = false
     var showLyrics = true
@@ -38,7 +39,8 @@ struct AppSettings: Codable, Equatable {
         displayID = try c.decodeIfPresent(UInt32.self, forKey: .displayID)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         fullScreen = try c.decodeIfPresent(Bool.self, forKey: .fullScreen) ?? d.fullScreen
-        visualMode = (try? c.decodeIfPresent(VisualMode.self, forKey: .visualMode)) ?? d.visualMode
+        background = (try? c.decodeIfPresent(BackgroundStyle.self, forKey: .background)) ?? d.background
+        showCover = try c.decodeIfPresent(Bool.self, forKey: .showCover) ?? d.showCover
         showNowPlaying = try c.decodeIfPresent(Bool.self, forKey: .showNowPlaying) ?? d.showNowPlaying
         showDebugOverlay = try c.decodeIfPresent(Bool.self, forKey: .showDebugOverlay) ?? d.showDebugOverlay
         showLyrics = try c.decodeIfPresent(Bool.self, forKey: .showLyrics) ?? d.showLyrics

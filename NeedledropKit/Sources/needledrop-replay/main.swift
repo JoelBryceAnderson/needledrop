@@ -18,7 +18,8 @@ let usage = """
                                                    Real-time through the live ring-buffer path
       needledrop-replay synth <out.wav> [--sample-rate HZ] [--seed N]
                                                    Write a synthetic side with known ground truth
-      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text"] [--seconds S] [--size WxH] [--palette-only]
+      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text" [--lyric-slot N]] [--caption "Title|Subtitle"] [--style paper|smoke] [--no-cover]
+                               [--seconds S] [--size WxH]
                                                    Render visuals offscreen with synthetic music
       needledrop-replay devices                    List audio input devices
       needledrop-replay listen [--device UID] [options]
@@ -185,25 +186,55 @@ case "synth":
     for (i, t) in truth.tracks.enumerated() {
         print(String(format: "  track %d  %@ – %@  %.0f BPM", i + 1, clock(t.start), clock(t.end), t.bpm))
     }
-    // Stand-in identities so replay in the app shows real metadata and artwork.
-    let names = [("Dreams", "Fleetwood Mac"), ("Go Your Own Way", "Fleetwood Mac"), ("Songbird", "Fleetwood Mac")]
-    let script = ReplayScript(tracks: zip(truth.tracks, names.cycled(truth.tracks.count)).map { t, n in
-        .init(start: t.start, end: t.end, title: n.0, artist: n.1, offset: 30, rate: 1.003)
-    })
-    try script.write(for: url)
+    // A fictional album with its own cover and lyrics, so replay in the app shows
+    // metadata, artwork and lyrics with nothing fetched and nothing licensed.
+    let directory = url.deletingLastPathComponent()
+    let base = url.deletingPathExtension().lastPathComponent
+    let album = "Paper Weather", artist = "The Creases"
+    let songs: [(title: String, lyrics: [(Double, String)])] = [
+        ("Paper Weather", [(2, "Paper weather in the morning"), (5.5, "Folding light along the floor"),
+                           (9, "Every crease a little warning"), (12.5, "Every edge an open door"),
+                           (16, "Hold it to the window"), (19.5, "Let the colours bleed")]),
+        ("Origami Heart", [(2, "Bend me once and I remember"), (5.5, "Bend me twice and I'm a bird"),
+                           (9, "All the corners of December"), (12.5, "Pressed between a single word"),
+                           (16, "Crane, crane, fly")]),
+        ("Valley Fold", [(1.5, "Down in the valley fold"), (5, "Mountain on the other side"),
+                         (8.5, "Turn the page and let it go"), (12, "Paper weather, open wide")]),
+    ]
+    let cover = "\(base).cover.png"
+    try CoverArtGenerator.png(title: album)?.write(to: directory.appendingPathComponent(cover))
+    var tracks: [ReplayScript.Track] = []
+    for (i, (t, song)) in zip(truth.tracks, songs.cycled(truth.tracks.count)).enumerated() {
+        let lrc = "\(base).\(i + 1).lrc"
+        let text = song.lyrics.map { time, line in String(format: "[%02d:%05.2f]%@", Int(time) / 60, time.truncatingRemainder(dividingBy: 60), line) }
+        try text.joined(separator: "\n").write(to: directory.appendingPathComponent(lrc), atomically: true, encoding: .utf8)
+        var track = ReplayScript.Track(start: t.start, end: t.end, title: song.title, artist: artist, rate: 1.002)
+        track.album = album
+        track.year = 2026
+        track.trackNumber = i + 1
+        track.duration = t.end - t.start
+        track.artwork = cover
+        track.lyrics = lrc
+        tracks.append(track)
+    }
+    try ReplayScript(tracks: tracks).write(for: url)
     print("wrote \(ReplayScript.sidecarURL(for: url).lastPathComponent) (scripted recognition for replay)")
 
 case "still":
     let artPath = option("--art")
     let lyricText = option("--lyric")
+    let lyricID = option("--lyric-slot").flatMap(Int.init) ?? 0  // which placement to print it in
+    let captionText = option("--caption")?.split(separator: "|", maxSplits: 1).map(String.init)
     let seconds = option("--seconds").flatMap(Double.init) ?? 4
     let size = (option("--size") ?? "1280x720").split(separator: "x").compactMap { Int($0) }
-    let paletteOnly = arguments.contains("--palette-only")
-    arguments.removeAll { $0 == "--palette-only" }
+    let noCover = arguments.contains("--no-cover")
+    arguments.removeAll { $0 == "--no-cover" }
+    let style = option("--style").flatMap(BackgroundStyle.init(rawValue:)) ?? .paper
     guard let path = arguments.first, size.count == 2 else { fail("still needs an output path (and --size WxH)") }
 
     let renderer = try VisualsRenderer()
-    if paletteOnly { renderer.mode = .paletteBleed }
+    renderer.showCover = !noCover
+    renderer.background = style
     if let artPath {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: artPath) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail("can't read \(artPath)") }
@@ -225,8 +256,9 @@ case "still":
         let features = AudioFeatures(bands: BandEnergies(sub: 0.02 + 0.2 * kick, bass: 0.03 + 0.25 * kick, mids: 0.08, highs: 0.015),
                                      musicBandRMS: 0.1)
         let buffer = queue.makeCommandBuffer()!
-        let input = VisualInput(features: features, beatAge: beatAge, active: true, lyricsAvailable: lyricText != nil,
-                                lyric: lyricText.map { LyricFrame(id: 0, text: $0) })
+        let input = VisualInput(features: features, beatAge: beatAge, active: true,
+                                lyric: lyricText.map { LyricFrame(id: lyricID, text: $0) },
+                                caption: captionText.map { CaptionFrame(id: "still", title: $0[0], subtitle: $0.count > 1 ? $0[1] : "") })
         renderer.render(to: target, input: input, time: t, commandBuffer: buffer)
         buffer.commit()
         await buffer.completed()

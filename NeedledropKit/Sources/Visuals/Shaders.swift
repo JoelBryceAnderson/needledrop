@@ -12,8 +12,20 @@ enum Shaders {
     struct Uniforms {
         float4 frame;   // resolution.x, resolution.y, flow (integrated time), brightness
         float4 audio;   // bass, mids, highs, level
-        float4 rhythm;  // beat, lyricsPresence (cover makes room), mix (0 = previous slot, 1 = current), coverAmount
+        float4 rhythm;  // beat, unused, mix (0 = previous slot, 1 = current), coverAmount
         float4 slots;   // hasArt0, hasArt1, hasMask0, hasMask1
+        float4 style;   // background (0 = paper, 1 = smoke), cover centre x (uv), cover size (frame heights), unused
+        // Two lyric lines printed on the scene. a: centre.xy, half size.xy (height units, x
+        // across aspect); b: angle, opacity, blur (mip level), unused.
+        float4 ink0a;
+        float4 ink0b;
+        float4 ink1a;
+        float4 ink1b;
+        float4 ink2a;   // the now-playing caption, printed the same way
+        float4 ink2b;
+        float4 crease[3]; // normal.xy, offset (dot(q, normal) > offset = past it), active
+        float4 fold;    // tilt (radians), accent strip, unused, unused
+        float4 light;   // xyz
         float4 palette0[6];
         float4 palette1[6];
     };
@@ -88,6 +100,75 @@ enum Shaders {
         return max(c, 0.0);
     }
 
+    // --- Lyrics as ink on the paper ---------------------------------------------
+
+    float inkLine(float2 q, float4 a, float4 b, texture2d<float> tex, sampler s) {
+        if (b.y < 0.001) return 0.0;
+        float2 d = q - a.xy;
+        float c = cos(-b.x), sn = sin(-b.x);
+        float2 local = float2(c * d.x - sn * d.y, sn * d.x + c * d.y);
+        float2 t = local / (2.0 * a.zw) + 0.5;
+        return tex.sample(s, t, level(b.z)).a * b.y;
+    }
+
+    /// Ink coverage at scene uv: both lyric slots (one can soak out as the next soaks in)
+    /// and the caption.
+    float inkAt(float2 uv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1,
+                texture2d<float> ink2) {
+        constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
+        float2 q = float2(uv.x * u.frame.x / u.frame.y, uv.y);
+        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s);
+        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s);
+        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s);
+        return 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
+    }
+
+    /// Printed in the palette's darkest or lightest colour, whichever stands out from the paper.
+    float3 inkColor(float3 paper, constant float4 *pal) {
+        float lum = dot(paper, float3(0.2126, 0.7152, 0.0722));
+        return lum > 0.4 ? pal[0].rgb * 0.85 : mix(pal[5].rgb, float3(1.0), 0.45);
+    }
+
+    // --- Paper: a sheet folded along a few long creases (geometry from FoldLayout) ---
+
+    /// Strip index at q: how many creases q is past. Strips alternate mountain / valley.
+    int stripAt(float2 q, constant Uniforms &u) {
+        int k = 0;
+        for (int i = 0; i < 3; i++) {
+            float4 c = u.crease[i];
+            if (c.w > 0.5 && dot(q, c.xy) > c.z) k++;
+        }
+        return k;
+    }
+
+    float3 paper(float2 uv, constant Uniforms &u, constant float4 *pal,
+                 texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
+        float aspect = u.frame.x / u.frame.y;
+        float3 light = u.light.xyz;
+        float tilt = u.fold.x;
+        float3 sheet = max(pal[3].rgb, float3(0.12));
+        float3 accent = max(pal[4].rgb, float3(0.12));
+        // 4× supersampling: clean creases and letters at 480 lines.
+        const float2 offsets[4] = { float2(-0.25, -0.25), float2(0.25, -0.25), float2(-0.25, 0.25), float2(0.25, 0.25) };
+        float3 sum = float3(0.0);
+        for (int s = 0; s < 4; s++) {
+            float2 suv = uv + offsets[s] / u.frame.xy;
+            float2 q = float2(suv.x * aspect, suv.y);
+            int k = stripAt(q, u);
+            float2 m = u.crease[min(k, 2)].xy;
+            float sgn = (k % 2 == 0) ? 1.0 : -1.0;
+            float3 n = normalize(float3(m * sin(tilt) * sgn, cos(tilt)));
+            float lit = 0.38 + 0.85 * max(0.0, dot(n, light));
+            // One sheet colour, with the album's second colour on one strip for an accent.
+            float3 c = (k == int(u.fold.y) ? accent : sheet) * lit;
+            // Ink is chosen against the lit paper, so it reads on bright and shadowed strips.
+            float ink = inkAt(suv, u, ink0, ink1, ink2);
+            c = mix(c, inkColor(c, pal), ink * 0.92);
+            sum += c;
+        }
+        return sum * 0.25;
+    }
+
     // --- Living cover: artwork with the subject floating off its background ---
 
     struct Cover {
@@ -99,15 +180,14 @@ enum Shaders {
     Cover livingCover(float2 uv, constant Uniforms &u, texture2d<float> art, texture2d<float> mask,
                       float hasMask, sampler s) {
         float aspect = u.frame.x / u.frame.y;
-        // With lyrics up, the cover shrinks a little and rises to leave the lower band free.
-        float lyrics = u.rhythm.y;
-        float2 p = (uv - float2(0.5, 0.5 - 0.075 * lyrics)) * float2(aspect, 1.0);
-        float size = mix(0.64, 0.54, lyrics) * (1.0 + 0.012 * u.rhythm.x);
+        // Centred, or moved aside to leave a field for lyrics (animated by the renderer).
+        float2 p = (uv - float2(u.style.y, 0.5)) * float2(aspect, 1.0);
+        float size = u.style.z * (1.0 + 0.005 * u.rhythm.x);
         float2 c = p / size + 0.5;
 
         float flow = u.frame.z;
-        float2 drift = float2(sin(flow * 2.1), cos(flow * 1.7));
-        float push = 0.015 + 0.035 * u.audio.x;
+        float2 drift = float2(sin(flow * 0.9), cos(flow * 0.7));
+        float push = 0.01 + 0.015 * u.audio.x;
         float2 bgUV = (c - 0.5) * 0.95 + 0.5 - drift * 0.006;
         float2 fgUV = (c - 0.5) / (1.0 + push) + 0.5 + drift * 0.012;
 
@@ -120,16 +200,26 @@ enum Shaders {
         // Rounded square with a soft shadow, in cover units.
         float2 d = abs(c - 0.5) - (0.5 - 0.035);
         float dist = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - 0.035;
+        // A card lying on the paper: short shadow, offset away from the light.
+        float2 ds = abs(c - float2(0.515, 0.53)) - (0.5 - 0.035);
+        float shadowDist = length(max(ds, 0.0)) + min(max(ds.x, ds.y), 0.0) - 0.035;
         Cover o;
         o.color = col;
         o.inside = 1.0 - smoothstep(0.0, 0.008, dist);
-        o.shadow = (1.0 - smoothstep(-0.02, 0.18, dist)) * 0.65;
+        o.shadow = (1.0 - smoothstep(-0.01, 0.05, shadowDist)) * 0.55;
         return o;
     }
 
     float3 slotColor(float2 uv, constant Uniforms &u, constant float4 *pal,
-                     texture2d<float> art, texture2d<float> mask, float hasArt, float hasMask, sampler s) {
-        float3 base = paletteBleed(uv, u, pal);
+                     texture2d<float> art, texture2d<float> mask, float hasArt, float hasMask, sampler s,
+                     texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
+        float3 base;
+        if (u.style.x < 0.5) {
+            base = paper(uv, u, pal, ink0, ink1, ink2);
+        } else {
+            base = paletteBleed(uv, u, pal);
+            base = mix(base, inkColor(base, pal), inkAt(uv, u, ink0, ink1, ink2) * 0.92);
+        }
         float amount = u.rhythm.w * hasArt;
         if (amount > 0.001) {
             Cover cv = livingCover(uv, u, art, mask, hasMask, s);
@@ -144,52 +234,20 @@ enum Shaders {
                                    texture2d<float> art0 [[texture(0)]],
                                    texture2d<float> mask0 [[texture(1)]],
                                    texture2d<float> art1 [[texture(2)]],
-                                   texture2d<float> mask1 [[texture(3)]]) {
+                                   texture2d<float> mask1 [[texture(3)]],
+                                   texture2d<float> ink0 [[texture(4)]],
+                                   texture2d<float> ink1 [[texture(5)]],
+                                   texture2d<float> ink2 [[texture(6)]]) {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_edge);
-        float3 col = slotColor(in.uv, u, u.palette0, art0, mask0, u.slots.x, u.slots.z, s);
+        float3 col = slotColor(in.uv, u, u.palette0, art0, mask0, u.slots.x, u.slots.z, s, ink0, ink1, ink2);
         if (u.rhythm.z < 0.999) {
-            float3 prev = slotColor(in.uv, u, u.palette1, art1, mask1, u.slots.y, u.slots.w, s);
+            float3 prev = slotColor(in.uv, u, u.palette1, art1, mask1, u.slots.y, u.slots.w, s, ink0, ink1, ink2);
             col = mix(prev, col, u.rhythm.z);
         }
         float2 v = in.uv - 0.5;
         col *= 1.0 - dot(v, v) * 0.7;
         col *= u.frame.w;
         return float4(col, 1.0);
-    }
-
-    // --- Lyrics: one textured quad per line, alpha-blended (premultiplied) over the scene ---
-
-    struct TextUniforms {
-        float4 rect;   // centre.x, centre.y, half width, half height (scene uv, y down)
-        float4 style;  // opacity, glow, unused, unused
-        float4 color;
-    };
-
-    struct TOut {
-        float4 position [[position]];
-        float2 tex;
-    };
-
-    vertex TOut text_vertex(uint vid [[vertex_id]], constant TextUniforms &t [[buffer(0)]]) {
-        float2 corner = float2(vid & 1, vid >> 1);
-        float2 tex = corner * 1.3 - 0.15;              // overscan so shadow and glow aren't clipped
-        float2 uv = t.rect.xy + (tex * 2.0 - 1.0) * t.rect.zw;
-        TOut o;
-        o.position = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
-        o.tex = tex;
-        return o;
-    }
-
-    fragment float4 text_fragment(TOut in [[stage_in]], constant TextUniforms &t [[buffer(0)]],
-                                  texture2d<float> text [[texture(0)]]) {
-        constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
-        float a = text.sample(s, in.tex).a;
-        // Blurred mips stand in for a drop shadow and a soft glow: cheap and smooth at 480 lines.
-        float shadow = text.sample(s, in.tex + float2(0.0, 0.035), level(3.0)).a;
-        float glow = text.sample(s, in.tex, level(4.5)).a;
-        float3 rgb = t.color.rgb * a + (1.0 - a) * t.color.rgb * glow * t.style.y;
-        float alpha = a + (1.0 - a) * max(shadow * 0.9, glow * t.style.y * 0.4);
-        return float4(rgb, alpha) * t.style.x;
     }
 
     // Upscale the low-res scene to the drawable. Bilinear is already soft at 480 lines,
