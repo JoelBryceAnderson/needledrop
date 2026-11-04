@@ -21,7 +21,7 @@ import Testing
                                        rate: 1.004)
         }
         let engine = Engine(recognizer: ScriptedRecognizer(segments: segments, latency: 4), metadata: nil)
-        try await engine.start(source: FileReplaySource(url: url, speed: 40, trailingSilence: 12))
+        try await engine.start(source: FileReplaySource(url: url, speed: 40, trailingSilence: 12), lockstep: true)
 
         var changes: [String?] = []
         var trackStarts: [String: Double] = [:]
@@ -63,7 +63,7 @@ import Testing
         // A recognizer that never answers (no Shazam).
         let engine = Engine(recognizer: ScriptedRecognizer(segments: []), metadata: nil)
         #expect(await engine.identify(title: "Too early", artist: "Nobody") == false)  // nothing playing yet
-        try await engine.start(source: FileReplaySource(url: url, speed: 10, trailingSilence: 0))
+        try await engine.start(source: FileReplaySource(url: url, speed: 10, trailingSilence: 0), lockstep: true)
 
         var named = false
         for await event in engine.events {

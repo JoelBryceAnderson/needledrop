@@ -106,7 +106,9 @@ public actor Engine {
         shared.withLock { $0 }
     }
 
-    public func start(source: any AudioSource) throws {
+    /// `lockstep`: for sped-up replays (tests): the analysis waits for each side event and tick
+    /// to be handled, so results don't depend on how busy the machine is.
+    public func start(source: any AudioSource, lockstep: Bool = false) throws {
         let pipelineEvents = pipeline.events
         tasks.append(Task { [weak self] in
             for await event in pipelineEvents { await self?.handle(event) }
@@ -120,7 +122,7 @@ public actor Engine {
                 }
             })
         }
-        try pipeline.start(source: source)
+        try pipeline.start(source: source, lockstep: lockstep)
     }
 
     /// Names the track playing now, for when recognition can't (no Shazam, or a pressing
@@ -171,9 +173,11 @@ public actor Engine {
             case .gapStarted: break
             }
             apply(.side(side))
+            pipeline.acknowledge()
         case .tick(let time, let phase):
             lastTick = time
             apply(.tick(time: time, detector: phase))
+            defer { pipeline.acknowledge() }
             if machine.phase == .playing, let track = machine.track, let clock = machine.clock {
                 archiveInbox.yield(.trackSeen(track, clockStart: clock.trackStartTime, at: time))
             }
