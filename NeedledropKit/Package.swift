@@ -7,7 +7,7 @@ let package = Package(
     products: [
         .library(
             name: "NeedledropKit",
-            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics", "Archive"]
+            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics", "Archive", "ArtDirector"]
         ),
         .executable(name: "needledrop-replay", targets: ["needledrop-replay"]),
     ],
@@ -35,6 +35,8 @@ let package = Package(
         .target(name: "SessionState", dependencies: ["SignalAnalysis", "Recognition"]),
         // Metal renderer, palettes, scene transitions. Shaders compile at runtime from source.
         .target(name: "Visuals", dependencies: ["SignalAnalysis"]),
+        // Claude as art director: style specs and custom shaders per album.
+        .target(name: "ArtDirector", dependencies: ["Visuals"]),
         // Wires capture → analysis → session → recognition → metadata, live or offline.
         .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Archive"]),
         // Feed recorded/synthetic audio through the pipeline as if it were live.
@@ -48,6 +50,7 @@ let package = Package(
         .testTarget(name: "VisualsTests", dependencies: ["Visuals", "SignalAnalysis"]),
         .testTarget(name: "LyricsTests", dependencies: ["Lyrics", "Metadata"]),
         .testTarget(name: "ArchiveTests", dependencies: ["Archive", "Recognition", "Metadata", "ReplayHarness"]),
+        .testTarget(name: "ArtDirectorTests", dependencies: ["ArtDirector", "Visuals"]),
         .testTarget(name: "MetadataTests", dependencies: ["Metadata", "Recognition"]),
         .testTarget(name: "PipelineTests", dependencies: ["Pipeline", "ReplayHarness", "SessionState", "AudioCapture", "Recognition", "Metadata"]),
     ]

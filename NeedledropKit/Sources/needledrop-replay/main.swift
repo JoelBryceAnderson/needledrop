@@ -18,9 +18,11 @@ let usage = """
                                                    Real-time through the live ring-buffer path
       needledrop-replay synth <out.wav> [--sample-rate HZ] [--seed N]
                                                    Write a synthetic side with known ground truth
-      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text" [--lyric-slot N]] [--caption "Title|Subtitle"] [--style paper|smoke] [--no-cover]
+      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text" [--lyric-slot N]] [--caption "Title|Subtitle"] [--style paper|smoke|googie] [--shader body.metal] [--no-cover]
                                [--seconds S] [--size WxH]
                                                    Render visuals offscreen with synthetic music
+      needledrop-replay validate-shader <body.metal>
+                                                   Run a custom-scene body through the art-director sandbox
       needledrop-replay devices                    List audio input devices
       needledrop-replay listen [--device UID] [options]
                                                    Live input, prints events and a level meter
@@ -229,19 +231,27 @@ case "still":
     let size = (option("--size") ?? "1280x720").split(separator: "x").compactMap { Int($0) }
     let noCover = arguments.contains("--no-cover")
     arguments.removeAll { $0 == "--no-cover" }
-    let style = option("--style").flatMap(BackgroundStyle.init(rawValue:)) ?? .paper
+    let style = option("--style").flatMap(LookStyle.Background.init(rawValue:))
+    let shaderBody = try option("--shader").map { try String(contentsOfFile: $0, encoding: .utf8) }
     guard let path = arguments.first, size.count == 2 else { fail("still needs an output path (and --size WxH)") }
 
     let renderer = try VisualsRenderer()
     renderer.showCover = !noCover
-    renderer.background = style
+    renderer.themeOverride = style
     if let artPath {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: artPath) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail("can't read \(artPath)") }
         let look = await AlbumLook.make(id: "still", artwork: image)
         print("palette: " + look.palette.colors.map { String(format: "#%02X%02X%02X", Int($0.r * 255), Int($0.g * 255), Int($0.b * 255)) }.joined(separator: " "))
         print("subject mask: \(look.subjectMask == nil ? "none" : "yes")")
-        renderer.show(look, at: 0)
+        var styled = look
+        if style == .googie { styled.style = .googie }
+        if let shaderBody {
+            styled.style.background = .custom
+            styled.style.customShaderBody = shaderBody
+        }
+        renderer.show(styled, at: 0)
+        if shaderBody != nil { try await Task.sleep(for: .seconds(2)) }  // let the custom pipeline compile
     }
     let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: size[0], height: size[1], mipmapped: false)
     descriptor.usage = [.renderTarget, .shaderRead]
@@ -272,6 +282,14 @@ case "still":
     CGImageDestinationAddImage(destination, context.makeImage()!, nil)
     guard CGImageDestinationFinalize(destination) else { fail("couldn't write \(path)") }
     print("wrote \(path)")
+
+case "validate-shader":
+    guard let path = arguments.first else { fail("validate-shader needs a file") }
+    let body = try String(contentsOfFile: path, encoding: .utf8)
+    switch await ShaderValidator.validate(body: body) {
+    case .valid: print("✔ valid")
+    case .invalid(let reason): print("✖ \(reason)"); exit(1)
+    }
 
 case "devices":
     let defaultUID = AudioDeviceCatalog.defaultInputDevice()?.uid

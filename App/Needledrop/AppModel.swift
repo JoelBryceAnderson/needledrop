@@ -1,5 +1,6 @@
 import AppKit
 import Archive
+import ArtDirector
 import AudioCapture
 import Foundation
 import Lyrics
@@ -39,6 +40,12 @@ final class AppModel {
     /// Current track's metadata and artwork, for the now-playing panel.
     private(set) var metadata: TrackMetadata?
     private(set) var artwork: NSImage?
+    private var artworkData: Data?
+    /// What the art director last did, for Settings.
+    private(set) var artDirectionStatus = "No album yet"
+    private(set) var currentAlbumKey: String?
+    private var tracksHeard: [String: [String]] = [:]
+    private let styleStore = StyleStore(directory: MetadataResolver.defaultCacheDirectory.appendingPathComponent("styles"))
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
     private(set) var microphoneDenied = false
@@ -226,6 +233,7 @@ final class AppModel {
         case .metadata(let info, let data):
             metadata = info
             artwork = data.flatMap(NSImage.init(data:))
+            artworkData = data
             updateLook(for: info)
         case .lyrics(let lyrics):
             if let lyrics, lyrics.instrumental {
@@ -245,21 +253,98 @@ final class AppModel {
         }
     }
 
-    private func updateLook(for info: TrackMetadata) {
+    private static func albumKey(_ info: TrackMetadata) -> String {
+        info.collectionID ?? "\(info.artist)|\(info.album ?? info.title)"
+    }
+
+    /// A new album gets its extracted-palette look at once, then (if the art director is
+    /// on) crossfades to Claude's direction — one request per album, cached after that.
+    private func updateLook(for info: TrackMetadata, reroll: Bool = false) {
+        let key = Self.albumKey(info)
+        tracksHeard[key, default: []].append(info.title)
         guard let renderer, let image = artwork?.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
-        let id = info.collectionID ?? "\(info.artist)|\(info.album ?? info.title)"
-        guard renderer.currentLookID != id else { return }
+        guard reroll || currentAlbumKey != key || renderer.currentLookID == nil else { return }
+        currentAlbumKey = key
         Task { [weak self] in
-            let look = await AlbumLook.make(id: id, artwork: image)
-            // Only if it's still the album playing.
-            guard let self, let current = self.metadata,
-                  (current.collectionID ?? "\(current.artist)|\(current.album ?? current.title)") == id else { return }
-            self.renderer?.show(look)
+            guard let self else { return }
+            let pinned = await self.styleStore.isPinned(key)
+            if self.currentAlbumKey == key { self.pinnedCache = pinned }
+        }
+        let theme = settings.theme
+        let brief = AlbumBrief(artist: info.albumArtist ?? info.artist, album: info.album ?? info.title, year: info.year,
+                               genre: info.genre, tracks: tracksHeard[key] ?? [], artwork: artworkData)
+        Task { [weak self] in
+            var look = await AlbumLook.make(id: key, artwork: image)
+            if theme == .googie { look.style = .googie }
+            guard let self, self.currentAlbumKey == key else { return }
+            if !reroll { self.renderer?.show(look) }
+            guard let director = self.makeArtDirector() else { return }
+            var detailed = brief
+            detailed.extractedPalette = look.palette.colors.map(Self.hex)
+            self.artDirectionStatus = "Asking Claude about “\(brief.album)”…"
+            do {
+                let direction = try await director.direction(for: detailed, key: key, theme: Self.directorTheme(theme), reroll: reroll)
+                guard self.currentAlbumKey == key else { return }
+                look.style = direction.style
+                if let palette = direction.palette { look.palette = palette }
+                look.id = "\(key)#\(direction.spec.mood)"
+                self.renderer?.show(look)
+                self.artDirectionStatus = "“\(direction.spec.mood)”" + (direction.shaderFellBack ? " (custom shader failed checks; using paper)" : "")
+                self.append("Art direction: \(direction.spec.mood)")
+            } catch {
+                self.artDirectionStatus = "\(error)"
+                self.append("Art director: \(error)")
+            }
         }
     }
 
+    private func makeArtDirector() -> ArtDirector? {
+        guard settings.artDirector.enabled, let key = APIKeyStore.load() else { return nil }
+        return ArtDirector(client: ClaudeClient(apiKey: key, model: settings.artDirector.model), store: styleStore)
+    }
+
+    private static func directorTheme(_ theme: AppTheme) -> Theme {
+        switch theme {
+        case .auto, .smoke: .auto
+        case .paper: .paper
+        case .googie: .googie
+        }
+    }
+
+    private static func hex(_ c: RGB) -> String {
+        String(format: "#%02X%02X%02X", Int(c.r * 255), Int(c.g * 255), Int(c.b * 255))
+    }
+
+    /// A fresh direction for the album playing (unless its look is pinned).
+    func rerollAlbumLook() {
+        guard let info = metadata else { return }
+        updateLook(for: info, reroll: true)
+    }
+
+    var currentLookPinned: Bool {
+        get { pinnedCache }
+        set {
+            pinnedCache = newValue
+            guard let key = currentAlbumKey else { return }
+            Task { await styleStore.setPinned(newValue, for: key) }
+        }
+    }
+    private var pinnedCache = false
+
+    var hasAPIKey: Bool { APIKeyStore.load() != nil }
+
+    func saveAPIKey(_ key: String) {
+        APIKeyStore.save(key.trimmingCharacters(in: .whitespacesAndNewlines))
+        append(key.isEmpty ? "API key removed" : "API key saved to the keychain")
+    }
+
     private func applyVisualSettings() {
-        renderer?.background = settings.background
+        renderer?.themeOverride = switch settings.theme {
+        case .auto: nil
+        case .paper: .paper
+        case .smoke: .smoke
+        case .googie: .googie
+        }
         renderer?.showCover = settings.showCover
     }
 
