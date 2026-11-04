@@ -72,7 +72,9 @@ public struct PlaybackClock: Sendable, Equatable {
     public func confidence(at t: Double) -> Double {
         let base = anchors.count >= 2 ? 0.9 : 0.6
         let age = max(0, t - (anchors.last?.time ?? t))
-        return base * exp(-abs(lastError) / 2) * exp(-age / 180)
+        // A turntable keeps good time: a clock stays usable for a whole long track between
+        // re-matches (lyrics used to vanish ~4 min into a song).
+        return base * exp(-abs(lastError) / 4) * exp(-age / 600)
     }
 
     private func fittedRate() -> Double? {

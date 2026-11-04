@@ -94,6 +94,39 @@ private struct Run {
         #expect(run.changes.map { $0?.identity } == ["isrc:A", nil, "isrc:B"])
     }
 
+    @Test func aTrackNamedJustBeforeTheGapSurvivesIt() {
+        // Apple Music announces the next song as it starts; the side detector hears the
+        // quiet between songs a moment later. The new track (and its lyrics) must survive.
+        var run = Run()
+        run.send(.side(.sideStarted(at: 0)))
+        run.advance(to: 5)
+        run.match(trackA, position: 5)
+        run.advance(to: 198)
+        run.match(trackB, position: 0)
+        run.advance(to: 199)
+        run.send(.side(.gapStarted(at: 199)))
+        run.advance(to: 201)
+        run.send(.side(.trackGap(start: 199, end: 201, abrupt: false)))
+        #expect(run.machine.phase == .playing)
+        #expect(run.machine.track?.identity == "isrc:B")
+        #expect(abs(run.machine.clock!.position(at: 210) - 12) < 1e-9)
+        #expect(run.changes.map { $0?.identity } == ["isrc:A", "isrc:B"])
+    }
+
+    @Test func aRematchOfTheOldTrackBeforeAGapDoesNotHoldIt() {
+        var run = Run()
+        run.send(.side(.sideStarted(at: 0)))
+        run.advance(to: 5)
+        run.match(trackA, position: 5)
+        run.advance(to: 197)
+        run.match(trackA, position: 197)  // same track: refines the clock, names nothing new
+        run.send(.side(.gapStarted(at: 199)))
+        run.advance(to: 201)
+        run.send(.side(.trackGap(start: 199, end: 201, abrupt: false)))
+        #expect(run.machine.track == nil)
+        #expect(run.machine.phase == .recognizing)
+    }
+
     @Test func segueWithoutAGapIsCaughtByTheRematch() {
         var run = Run()
         run.send(.side(.sideStarted(at: 0)))

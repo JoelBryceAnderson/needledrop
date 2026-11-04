@@ -59,6 +59,8 @@ public struct SessionMachine: Sendable {
     public private(set) var unidentified = false
     public private(set) var isRecognizing = false
     public private(set) var matchCount = 0
+    /// When a match last named a different track than the one playing.
+    private var trackNamedAt: Double?
 
     private var windowOpenedAt: Double?
     private var nextMatchAt: Double?
@@ -129,9 +131,18 @@ public struct SessionMachine: Sendable {
             nextMatchAt = nil
             closeWindow(&effects)
 
-        case .trackGap(_, let end, _):
-            // Music is back: almost certainly a new track.
+        case .trackGap(let start, let end, _):
             guard phase == .betweenTracks else { return }
+            if track != nil, let named = trackNamedAt, named >= start - Self.namedBeforeGap {
+                // The new track was named as it began (a music app announces it the moment it
+                // changes, a beat before the quiet between songs is heard): this gap is the
+                // one that ended the previous track, so keep the new one.
+                phase = .playing
+                nextMatchAt = end + config.rematchInterval
+                scheduleEndOfTrackCheck()
+                return
+            }
+            // Music is back: almost certainly a new track.
             phase = .recognizing
             setTrack(nil, notify: true, &effects)
             unidentified = false
@@ -160,6 +171,7 @@ public struct SessionMachine: Sendable {
         } else {
             setTrack(match, notify: true, &effects)
             clock = PlaybackClock(time: t, position: match.position, frequencySkew: match.frequencySkew)
+            trackNamedAt = t
         }
         phase = .playing
         unidentified = false
@@ -169,6 +181,9 @@ public struct SessionMachine: Sendable {
     }
 
     // MARK: - Helpers
+
+    /// A track named this long before a gap began is the one after the gap.
+    static let namedBeforeGap = 6.0
 
     private mutating func windowMissed(at t: Double, _ effects: inout [SessionEffect]) {
         if track != nil {
