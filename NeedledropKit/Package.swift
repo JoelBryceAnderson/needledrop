@@ -52,6 +52,6 @@ let package = Package(
         .testTarget(name: "ArchiveTests", dependencies: ["Archive", "Recognition", "Metadata", "ReplayHarness"]),
         .testTarget(name: "ArtDirectorTests", dependencies: ["ArtDirector", "Visuals"]),
         .testTarget(name: "MetadataTests", dependencies: ["Metadata", "Recognition"]),
-        .testTarget(name: "PipelineTests", dependencies: ["Pipeline", "ReplayHarness", "SessionState", "AudioCapture", "Recognition", "Metadata"]),
+        .testTarget(name: "PipelineTests", dependencies: ["Pipeline", "ReplayHarness", "SessionState", "AudioCapture", "Recognition", "Metadata", "Archive"]),
     ]
 )

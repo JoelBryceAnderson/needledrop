@@ -161,12 +161,17 @@ final class AppModel {
             }
         case .replay(let path):
             let url = URL(fileURLWithPath: path)
-            source = FileReplaySource(url: url, loop: true)
+            source = FileReplaySource(url: url, loop: true, audible: settings.replayAudible)
             do {
                 if let script = try ReplayScript.load(for: url) {
                     recognizer = script.recognizer()
                     catalog = script.catalog(directory: url.deletingLastPathComponent())
                     append("Using \(ReplayScript.sidecarURL(for: url).lastPathComponent) instead of Shazam")
+                } else if let script = await ReplayScript.fromTags(of: url), let track = script.tracks.first {
+                    // A song file you own: its tags say what it is; everything else (cover,
+                    // metadata, lyrics, art direction) is looked up as for a real record.
+                    recognizer = script.recognizer()
+                    append("Replaying \(track.artist) — \(track.title) (from the file's tags)")
                 }
             } catch {
                 append("Ignoring unreadable track sidecar: \(error.localizedDescription)")

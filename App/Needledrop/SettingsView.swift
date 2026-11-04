@@ -89,6 +89,15 @@ struct SettingsView: View {
                     }
                 }
             }
+            if case .replay = model.settings.input {
+                Toggle("Play replay audio through this Mac", isOn: Binding(
+                    get: { model.settings.replayAudible },
+                    set: { audible in
+                        model.settings.replayAudible = audible
+                        Task { await model.restartInput() }
+                    }
+                ))
+            }
             HStack {
                 Button("Replay a Recording…", action: chooseReplayFile)
                 Spacer()
@@ -118,7 +127,7 @@ struct SettingsView: View {
     private func chooseReplayFile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
-        panel.message = "Choose a recording to replay as if it were the turntable"
+        panel.message = "Choose a song or side to replay as if it were the turntable (a tagged file is identified from its tags)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         Task { await model.selectInput(.replay(path: url.path)) }
     }

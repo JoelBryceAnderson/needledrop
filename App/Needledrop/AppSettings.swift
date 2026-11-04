@@ -39,6 +39,8 @@ struct AppSettings: Codable, Equatable {
     var lyricAnimation: LyricAnimationChoice = .auto
     var rpm: RPMChoice = .auto
     var idleScreen: IdleScreen = .libraryWall
+    /// Replays play through the Mac's speakers too (never the turntable path).
+    var replayAudible = true
     var artDirector = ArtDirectorSettings()
     var showCover = true
     var showNowPlaying = true
@@ -66,6 +68,7 @@ struct AppSettings: Codable, Equatable {
         lyricAnimation = (try? c.decodeIfPresent(LyricAnimationChoice.self, forKey: .lyricAnimation)) ?? d.lyricAnimation
         rpm = (try? c.decodeIfPresent(RPMChoice.self, forKey: .rpm)) ?? d.rpm
         idleScreen = (try? c.decodeIfPresent(IdleScreen.self, forKey: .idleScreen)) ?? d.idleScreen
+        replayAudible = try c.decodeIfPresent(Bool.self, forKey: .replayAudible) ?? d.replayAudible
         artDirector = (try? c.decodeIfPresent(ArtDirectorSettings.self, forKey: .artDirector)) ?? d.artDirector
         showCover = try c.decodeIfPresent(Bool.self, forKey: .showCover) ?? d.showCover
         showNowPlaying = try c.decodeIfPresent(Bool.self, forKey: .showNowPlaying) ?? d.showNowPlaying

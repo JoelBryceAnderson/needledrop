@@ -1,7 +1,7 @@
 import Testing
 @testable import Visuals
 
-@Suite struct ShaderValidatorTests {
+@Suite(.needsGPU) struct ShaderValidatorTests {
     private func outcome(_ body: String) async -> ShaderValidator.Outcome {
         await ShaderValidator.validate(body: body)
     }
