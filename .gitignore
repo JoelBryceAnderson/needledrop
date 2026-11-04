@@ -1,0 +1,8 @@
+.build/
+.swiftpm/
+Needledrop.xcodeproj/
+xcuserdata/
+DerivedData/
+Fixtures/*.wav
+!Fixtures/.gitkeep
+.DS_Store

@@ -1,0 +1,41 @@
+# Generate Needledrop.xcodeproj with `xcodegen generate` (or `make project`).
+name: Needledrop
+options:
+  bundleIdPrefix: com.needledrop
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+packages:
+  NeedledropKit:
+    path: NeedledropKit
+targets:
+  Needledrop:
+    type: application
+    platform: macOS
+    sources:
+      - App/Needledrop
+    dependencies:
+      - package: NeedledropKit
+        product: NeedledropKit
+    info:
+      path: App/Needledrop/Info.plist
+      properties:
+        CFBundleDisplayName: Needledrop
+        LSApplicationCategoryType: public.app-category.music
+        NSMicrophoneUsageDescription: Needledrop listens to your turntable to recognise records, drive the visuals and archive what you play.
+    entitlements:
+      path: App/Needledrop/Needledrop.entitlements
+      properties:
+        # Not sandboxed: the archive (M5) writes to arbitrary external drives / NAS paths.
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.needledrop.Needledrop
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        # Set your team so mic permission survives rebuilds (and for ShazamKit in M2).
+        DEVELOPMENT_TEAM: ""
+        GENERATE_INFOPLIST_FILE: NO
