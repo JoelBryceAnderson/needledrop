@@ -65,6 +65,32 @@ struct FoldLayout: Equatable {
         return FoldLayout(aspect: aspect, creases: creases, tilt: tilt, light: light)
     }
 
+    /// Part-way from this composition to `other` (t 0…1): each crease turns and slides to
+    /// its counterpart. Creases one side has and the other doesn't enter (or leave) from beyond
+    /// the edge of the frame, so the paper refolds rather than jumping.
+    func morphed(to other: FoldLayout, _ t: Double) -> FoldLayout {
+        let n = max(creases.count, other.creases.count)
+        func offstage(_ layout: FoldLayout, _ i: Int) -> Crease {
+            // Beyond the far edge along the composition's normal, at the same angle.
+            let reference = layout.creases.last ?? Crease(point: SIMD2(aspect / 2, 0.5), angle: 0)
+            let far = SIMD2(aspect / 2, 0.5) + reference.normal * (1.25 + 0.3 * Double(i))
+            return Crease(point: far, angle: reference.angle)
+        }
+        var mixed: [Crease] = []
+        for i in 0..<n {
+            let a = i < creases.count ? creases[i] : offstage(self, i)
+            let b = i < other.creases.count ? other.creases[i] : offstage(other, i)
+            // Turn the short way round.
+            var turn = (b.angle - a.angle).truncatingRemainder(dividingBy: .pi)
+            if turn > .pi / 2 { turn -= .pi } else if turn < -.pi / 2 { turn += .pi }
+            mixed.append(Crease(point: a.point + (b.point - a.point) * t, angle: a.angle + turn * t))
+        }
+        // Indices stay put (a line soaking out keeps its crease); offstage creases lie beyond
+        // the frame on the far side, so no point on screen counts them.
+        return FoldLayout(aspect: aspect, creases: mixed, tilt: tilt + (other.tilt - tilt) * t,
+                          light: simd_normalize(light + (other.light - light) * t))
+    }
+
     /// Which strip `p` is on (0…creaseCount).
     func strip(at p: SIMD2<Double>) -> Int {
         creases.filter { $0.side(p) > 0 }.count

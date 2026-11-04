@@ -294,7 +294,7 @@ case "still":
                                      musicBandRMS: 0.1 * loud)
         let buffer = queue.makeCommandBuffer()!
         var input = VisualInput(features: features, beatAge: beatAge, active: true,
-                                lyric: lyricLines.isEmpty ? nil : LyricFrame(
+                                lyric: lyricLines.isEmpty || (lyricLines.count > 1 && t.truncatingRemainder(dividingBy: 4) >= 2.8) ? nil : LyricFrame(
                                     id: lyricLines.count > 1 ? Int(t / 4) : lyricID,
                                     text: lyricLines[Int(t / 4) % lyricLines.count], revealedWords: reveal),
                                 caption: captionText.map { CaptionFrame(id: "still", title: $0[0], subtitle: $0.count > 1 ? $0[1] : "") })
@@ -302,6 +302,9 @@ case "still":
         input.sideProgress = progress
         input.sideEnded = sideEnded && t > seconds - 3.5
         input.features.tempo = 120
+        // Cycling lines: each is up 2.8 s of every 4, leaving a gap before the next.
+        if lyricLines.count > 1 { input.nextLyricIn = 4 - t.truncatingRemainder(dividingBy: 4) }
+        input.lyricsAvailable = !lyricLines.isEmpty
         renderer.render(to: target, input: input, time: t, commandBuffer: buffer)
         buffer.commit()
         await buffer.completed()

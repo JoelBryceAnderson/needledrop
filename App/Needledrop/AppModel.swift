@@ -116,7 +116,9 @@ final class AppModel {
            let clock = session.clock, session.identifiedByHand || clock.confidence(at: features.time) > 0.15 {
             input.lyricsAvailable = true
             let position = clock.position(at: features.time)
-            if let cue = lyrics.cue(at: position) {
+            // The picture moves between lines: tell it how long until the next one.
+            input.nextLyricIn = lyrics.nextLineStart(after: position).map { ($0 - position) / clock.rate }
+            if let cue = lyrics.cue(at: position), position < cue.shownUntil {
                 var frame = LyricFrame(id: cue.index, text: cue.text, next: cue.next)
                 if typewriter {
                     // Words in time with the singing, snapped onto the beat grid where it's close.
@@ -127,7 +129,7 @@ final class AppModel {
                         let k0 = ((cue.start - beat) / period).rounded(.down)
                         beats = (0..<64).map { beat + (k0 + Double($0)) * period }.filter { $0 <= cue.end }
                     }
-                    let starts = WordTiming.starts(for: cue.text, from: cue.start, to: cue.end, beats: beats)
+                    let starts = WordTiming.starts(for: cue.text, from: cue.start, to: cue.sungEnd, beats: beats)
                     frame.revealedWords = WordTiming.revealed(at: position, starts: starts)
                 }
                 input.lyric = frame

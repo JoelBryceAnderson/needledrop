@@ -149,3 +149,32 @@ struct ChoreographerTests {
         #expect(frame?.targetCover == .hero)
     }
 }
+
+@Suite("Choreographer with timed lyrics")
+struct TimedLyricsTests {
+    @Test func holdsStillWhileALineIsUpAndMovesInTheGaps() {
+        var c = Choreographer()
+        var previous: Choreographer.Frame?
+        var movedInGaps = 0
+        var t = 0.0
+        while t < 120 {
+            let inLine = t.truncatingRemainder(dividingBy: 4) < 2.8
+            var input = Choreographer.Input(time: t, level: 0.4, beatAge: t.truncatingRemainder(dividingBy: 0.5),
+                                            tempo: 120, lyrics: true, trackID: "a|song")
+            input.lineShowing = inLine
+            input.nextLineIn = 4 - t.truncatingRemainder(dividingBy: 4)
+            let frame = c.update(input)
+            if let p = previous, t > 1 {
+                if inLine {
+                    #expect(frame.cover == p.cover, "cover moved during a line at \(t)")
+                    #expect(frame.camera == p.camera, "camera moved during a line at \(t)")
+                } else if frame.cover != p.cover || frame.camera != p.camera {
+                    movedInGaps += 1
+                }
+            }
+            previous = frame
+            t += 1.0 / 30
+        }
+        #expect(movedInGaps > 100)
+    }
+}

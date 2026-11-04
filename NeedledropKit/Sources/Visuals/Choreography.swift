@@ -136,6 +136,11 @@ public struct Choreographer: Sendable {
         /// Changes when the track (or album) changes.
         public var trackID: String?
         public var active: Bool
+        /// A lyric line is up: hold still.
+        public var lineShowing = false
+        /// Seconds until the next lyric line (nil: no timed lyrics coming). Moves happen in
+        /// the gaps and settle before it.
+        public var nextLineIn: Double?
 
         public init(time: Double, level: Double = 0, beatAge: Double? = nil, tempo: Double? = nil, lyrics: Bool = false,
                     showCover: Bool = true, trackID: String? = nil, active: Bool = true) {
@@ -166,13 +171,17 @@ public struct Choreographer: Sendable {
         public var shot: String
         /// How many cuts so far (counts the establishing shot).
         public var cuts: Int
+        /// A move is under way.
+        public var moving: Bool
+        /// 0…1 through the move, eased (1 when settled).
+        public var progress: Double
+        /// Which fold composition the move is heading to (0 = the album's own); the folds
+        /// morph from the one before it as `progress` runs.
+        public var composition: Int
     }
 
     /// 0 = still (the cover only steps aside for lyrics), 1 = full choreography.
     public var motion = 1.0
-    /// The renderer is zooming through nested sheets: the camera keeps its tilts and roll,
-    /// but the dive does the zooming and the travelling.
-    public var diving = false
     /// Beats per phrase (8 bars of 4/4).
     public var phraseBeats = 32
     /// Phrase length when no beat is tracked.
@@ -196,6 +205,13 @@ public struct Choreographer: Sendable {
     private var showCover = true
     private var lastMotion = 1.0
     private var pendingEnergyCut = false
+    /// Timed lyrics: a recomposition waiting for the next gap, and whether this gap has had
+    /// its move.
+    private var pendingRecompose = false
+    private var movedThisGap = false
+    /// The shortest gap worth moving in, and how long before the next line a move settles.
+    public var minimumGap = 1.0
+    public var settleBefore = 0.4
     private var driftAmount = 0.0
     /// When the current track started: energy needs some history before it means anything.
     private var trackStart = 0.0
@@ -223,6 +239,9 @@ public struct Choreographer: Sendable {
         if beat { beatsSinceCut += 1 }
 
         let sinceCut = input.time - lastCut
+        let timed = input.lyrics && (input.lineShowing || input.nextLineIn != nil)
+        let settledNow = input.time - transitionStart >= transitionLength
+        if input.lineShowing { movedThisGap = false }
         if input.trackID != trackID {
             trackID = input.trackID
             trackStart = input.time
@@ -231,10 +250,26 @@ public struct Choreographer: Sendable {
             showCover = input.showCover
             cut(at: input.time, establishing: true, tempo: input.tempo)
         } else if input.lyrics != lyrics || input.showCover != showCover || (motion > 0) != (lastMotion > 0) {
-            // Lyrics turned up (or the cover was toggled): recompose so there's room.
+            // Lyrics turned up (or the cover was toggled): recompose so there's room — in the
+            // next gap if a line is up now.
             lyrics = input.lyrics
             showCover = input.showCover
-            cut(at: input.time, establishing: false, tempo: input.tempo)
+            if timed, input.lineShowing, motion > 0 {
+                pendingRecompose = true
+            } else {
+                cut(at: input.time, establishing: false, tempo: input.tempo)
+            }
+        } else if timed {
+            // Still while a line is up; a move in the gap between lines, timed to settle before
+            // the next one (a long instrumental gap may get more than one).
+            if !input.lineShowing, settledNow, let window = input.nextLineIn, window >= minimumGap,
+               motion > 0 || pendingRecompose,
+               pendingRecompose || !movedThisGap || (window >= 6 && input.time - transitionStart - transitionLength >= 3) {
+                cut(at: input.time, establishing: false, tempo: input.tempo,
+                    length: min(4, max(0.8, window - settleBefore)))
+                movedThisGap = true
+                pendingRecompose = false
+            }
         } else if motion > 0, input.active {
             let ratio = shortEnergy / max(0.04, longEnergy)
             let settled = input.time - trackStart > 10
@@ -252,8 +287,9 @@ public struct Choreographer: Sendable {
         var cover = from.cover.mixed(to.cover, t)
         var camera = from.camera.mixed(to.camera, t)
         // A slow drift within the shot, so it never sits dead still. On the clock, not on the
-        // shot, so a cut doesn't jolt it.
-        driftAmount += ((motion * (input.active ? 1 : 0.4)) - driftAmount) * (1 - exp(-dt / 2))
+        // shot, so a cut doesn't jolt it. With timed lyrics there's none: the picture holds.
+        let driftTarget = timed ? 0 : motion * (input.active ? 1 : 0.4)
+        driftAmount += (driftTarget - driftAmount) * (1 - exp(-dt / (timed ? 0.5 : 2)))
         let s = input.time, d = driftAmount
         camera.pan += SIMD2(sin(s * 0.11), cos(s * 0.083)) * 0.018 * d
         camera.roll += sin(s * 0.07 + 2.1) * 0.012 * d
@@ -263,17 +299,11 @@ public struct Choreographer: Sendable {
         if !showCover { cover.visibility = 0 }
         var target = to.cover
         if !showCover { target.visibility = 0 }
-        var targetCamera = to.camera
-        if diving {
-            camera.zoom = 1
-            camera.pan *= 0.25
-            targetCamera.zoom = 1
-            targetCamera.pan *= 0.25
-        }
-        return Frame(cover: cover, camera: camera, targetCover: target, targetCamera: targetCamera, shot: to.name, cuts: cuts)
+        return Frame(cover: cover, camera: camera, targetCover: target, targetCamera: to.camera, shot: to.name, cuts: cuts,
+                     moving: x < 1, progress: t, composition: max(0, cuts - 1))
     }
 
-    private mutating func cut(at time: Double, establishing: Bool, tempo: Double?) {
+    private mutating func cut(at time: Double, establishing: Bool, tempo: Double?, length: Double? = nil) {
         // Start from wherever the picture is now (a cut can land mid-transition).
         let x = min(1, max(0, (time - transitionStart) / transitionLength))
         let t = x * x * x * (x * (x * 6 - 15) + 10)
@@ -285,7 +315,7 @@ public struct Choreographer: Sendable {
         transitionStart = time
         // Two bars, within reason.
         let beat = tempo.map { 60 / max(60, min(200, $0)) } ?? 0.5
-        transitionLength = min(5, max(2.5, beat * 8)) / max(0.5, motion)
+        transitionLength = length ?? min(5, max(2.5, beat * 8)) / max(0.5, motion)
         lastCut = time
         beatsSinceCut = 0
         pendingEnergyCut = false

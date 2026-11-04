@@ -24,7 +24,7 @@ enum Shaders {
         float4 slots;   // hasArt0, hasArt1, hasMask0, hasMask1
         float4 style;   // background (0 paper, 1 smoke, 2 googie, 3 custom), cover centre x (uv), cover size (frame heights), unused
         // Two lyric lines printed on the scene. a: centre.xy, half size.xy (height units, x
-        // across aspect); b: angle, opacity, blur (mip level), nested level it's printed on.
+        // across aspect); b: angle, opacity, blur (mip level), unused.
         float4 ink0a;
         float4 ink0b;
         float4 ink1a;
@@ -42,9 +42,6 @@ enum Shaders {
         // The camera over the background: rows of a homography from the screen (scene units,
         // centred) to the background plane (scene units). Perspective tilts live here.
         float4 camera[3];
-        // The pull-back (paper only): enabled, phase through the stage (1 → 0), scale per stage, pleats per stage.
-        float4 dive;
-        float4 diveCentre;      // vanishing point.xy, crease normal.xy
     };
 
     struct VOut {
@@ -197,7 +194,6 @@ enum Shaders {
     }
 
     // --- Paper: a sheet folded along a few long creases (geometry from FoldLayout) ---
-    // With the dive on, each sheet holds the next, smaller one (levels 1…3).
 
     /// Strip index at q: how many creases q is past. Strips alternate mountain / valley.
     int stripAt(float2 q, constant Uniforms &u) {
@@ -209,56 +205,28 @@ enum Shaders {
         return k;
     }
 
-    /// The sheet's colour at q (scene units), lit by its folds. With the pull-back on, the
-    /// sheet is pleated: strips growing geometrically away from a vanishing line, the same at
-    /// every scale.
+    /// The sheet's colour at q (scene units), lit by its folds.
     float3 sheetAt(float2 q, constant Uniforms &u, constant float4 *pal) {
         float tilt = u.fold.x;
         float3 sheet = max(pal[3].rgb, float3(0.12));
         float3 accent = max(pal[4].rgb, float3(0.12));
-        float2 m;
-        int k;
-        bool isAccent;
-        if (u.dive.x > 0.5) {
-            m = u.diveCentre.zw;
-            float d = dot(q - u.diveCentre.xy, m);
-            int pleats = int(u.dive.w + 0.5);
-            int j = int(floor(log(max(abs(d), 1e-6)) / log(u.dive.z) * float(pleats)));
-            k = j + (d < 0.0 ? 1 : 0);
-            // One accent pleat in each stage's worth: periodic, so seamless.
-            isAccent = ((j % pleats) + pleats) % pleats == 1;
-        } else {
-            m = u.crease[0].xy;  // the creases run (nearly) parallel
-            k = stripAt(q, u);
-            isAccent = k == int(u.fold.y);
-        }
+        float2 m = u.crease[0].xy;  // the creases run (nearly) parallel
+        int k = stripAt(q, u);
         float sgn = (k & 1) == 0 ? 1.0 : -1.0;
         float3 n = normalize(float3(m * sin(tilt) * sgn, cos(tilt)));
         float lit = 0.38 + 0.85 * max(0.0, dot(n, u.light.xyz));
-        return (isAccent ? accent : sheet) * lit;
-    }
-
-    /// The same average colour pleats blend to where they get finer than a pixel.
-    float3 pleatAverage(constant Uniforms &u, constant float4 *pal) {
-        float tilt = u.fold.x;
-        float2 m = u.diveCentre.zw;
-        float3 up = normalize(float3(m * sin(tilt), cos(tilt))), down = normalize(float3(-m * sin(tilt), cos(tilt)));
-        float lit = 0.38 + 0.85 * 0.5 * (max(0.0, dot(up, u.light.xyz)) + max(0.0, dot(down, u.light.xyz)));
-        return max(pal[3].rgb, float3(0.12)) * lit;
+        // One sheet colour, with the album's second colour on one strip for an accent.
+        return (k == int(u.fold.y) ? accent : sheet) * lit;
     }
 
     /// xyz: the ink colour, w: coverage. Each line takes one colour, chosen against the paper
-    /// at its centre, so it doesn't flip where it crosses light and dark strips. Lines printed
-    /// stages ago (b.w = level) are scaled up by the pull-back's scale per level.
+    /// at its centre, so it doesn't flip where it crosses light and dark strips.
     float4 inkOn(float2 q, float2 suv, constant Uniforms &u, constant float4 *pal,
                  texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
         constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
         float aspect = u.frame.x / u.frame.y;
-        float2 c = u.diveCentre.xy;
-        float2 q0 = u.dive.x > 0.5 ? c + (q - c) * pow(u.dive.z, u.ink0b.w) : q;
-        float2 q1 = u.dive.x > 0.5 ? c + (q - c) * pow(u.dive.z, u.ink1b.w) : q;
-        float a0 = inkLine(q0, u.ink0a, u.ink0b, ink0, s, u.inkWords.x, u.inkWords.y);
-        float a1 = inkLine(q1, u.ink1a, u.ink1b, ink1, s, u.inkWords.z, u.inkWords.w);
+        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s, u.inkWords.x, u.inkWords.y);
+        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s, u.inkWords.z, u.inkWords.w);
         float a2 = inkLine(float2(suv.x * aspect, suv.y), u.ink2a, u.ink2b, ink2, s, 0.0, 0.0);
         float a = 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
         if (a < 0.001) return float4(0.0);
@@ -274,18 +242,12 @@ enum Shaders {
         return float4(inkColor(under, pal), a);
     }
 
-    float3 paperSample(float2 suv, float pixel, constant Uniforms &u, constant float4 *pal,
+    float3 paperSample(float2 suv, constant Uniforms &u, constant float4 *pal,
                        texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
         float aspect = u.frame.x / u.frame.y;
         float2 wuv = toWorld(suv, u);
         float2 q = float2(wuv.x * aspect, wuv.y);
         float3 c = sheetAt(q, u, pal);
-        if (u.dive.x > 0.5) {
-            // Towards the vanishing line pleats get finer than a pixel: let them blend smoothly.
-            float d = abs(dot(q - u.diveCentre.xy, u.diveCentre.zw));
-            float width = d * (pow(u.dive.z, 1.0 / u.dive.w) - 1.0);
-            c = mix(pleatAverage(u, pal), c, smoothstep(1.0, 3.0, width / max(pixel, 1e-6)));
-        }
         float4 ink = inkOn(q, suv, u, pal, ink0, ink1, ink2);
         return mix(c, ink.rgb, ink.a * 0.92);
     }
@@ -295,12 +257,8 @@ enum Shaders {
         // 4× supersampling: clean creases and letters at 480 lines.
         const float2 offsets[4] = { float2(-0.25, -0.25), float2(0.25, -0.25), float2(-0.25, 0.25), float2(0.25, 0.25) };
         float3 sum = float3(0.0);
-        // World size of a pixel here (for the pleats' anti-aliasing).
-        float aspect = u.frame.x / u.frame.y;
-        float2 w0 = toWorld(uv, u) * float2(aspect, 1.0);
-        float pixel = length(fwidth(w0));
         for (int s = 0; s < 4; s++) {
-            sum += paperSample(uv + offsets[s] / u.frame.xy, pixel, u, pal, ink0, ink1, ink2);
+            sum += paperSample(uv + offsets[s] / u.frame.xy, u, pal, ink0, ink1, ink2);
         }
         return sum * 0.25;
     }

@@ -58,6 +58,9 @@ public struct VisualInput: Sendable {
     public var rpm = 100.0 / 3
     /// Changes when the track changes (the choreographer opens a new scene). Nil: the album.
     public var trackID: String?
+    /// Seconds until the next lyric line starts (nil: none coming). The picture moves in the
+    /// gaps between lines and settles before the next one.
+    public var nextLyricIn: Double?
 
     public init(features: AudioFeatures = AudioFeatures(), beatAge: Double? = nil, active: Bool = false,
                 lyricsAvailable: Bool = false, lyric: LyricFrame? = nil, caption: CaptionFrame? = nil) {
@@ -119,7 +122,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     }
     private var choreographer = Choreographer()
     private var shot = Choreographer.Frame(cover: .hero, camera: .identity, targetCover: .hero,
-                                           targetCamera: .identity, shot: "hero", cuts: 0)
+                                           targetCamera: .identity, shot: "hero", cuts: 0,
+                                           moving: false, progress: 1, composition: 0)
 
     private var dissolve = 0.0
     private var lastKick = -Double.infinity
@@ -167,24 +171,11 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         var revealedWords: Double?
         /// The caption's centre on screen (scene units), chosen clear of the cover.
         var screenCentre: SIMD2<Double>?
-        /// Pull-back: how many stages ago it was printed (it has shrunk by the scale each).
-        var level = 0
-        /// Pull-back: where it was set (level-0 coordinates then), fixed on the pleats.
-        var fixed: (centre: SIMD2<Double>, angle: Double)?
     }
 
-    /// The seamless pull-back across pleated paper (paper, with motion on), per album.
-    private var dive: Dive?
-    private var diveKey: String?
-    private var diveEnergy = 0.0
-    /// This frame's folds, the camera (screen → level 0) and, pulling back, the pleats.
-    private struct Stages {
-        var layout: FoldLayout
-        var pleats: FoldLayout?
-        var camera: simd_double3x3
-        var diving: Bool
-    }
-    private var stages: Stages?
+    /// The fold composition morphs between moves: from `composition - 1` to `composition` as
+    /// the shot's move progresses. Folds wander on a clock that runs only while moving.
+    private var foldFlow = 0.0
 
     private var lyricSlots: [PrintedSlot] = []
     private var captionSlot: PrintedSlot?
@@ -300,7 +291,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         // Side over: everything slows to a stop over ~3 s, like a record spinning down.
         windDown = input.sideEnded ? min(1, windDown + dt / 3) : max(0, windDown - dt / 0.8)
         let running = 1 - windDown * windDown * (3 - 2 * windDown)
-        flow += dt * (0.04 + 0.10 * Double(audio.level)) * style.speed * running
+        // While a lyric is up the background holds nearly still; it moves between lines.
+        let holding = input.lyric != nil && motion > 0 ? 0.15 : 1
+        flow += dt * (0.04 + 0.10 * Double(audio.level)) * style.speed * running * holding
         recordAngle = (recordAngle + dt * input.rpm / 60 * 2 * .pi * running).truncatingRemainder(dividingBy: 2 * .pi)
         // Dissolve: a transient scatters the shards in proportion to how loud it is; they
         // drift home, faster on the beat.
@@ -324,18 +317,17 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         let current = slots.first
         let aspect = Double(width) / Double(height)
         let (pipeline, background) = scenePipelineAndBackground(style)
-        // The dive: on paper, with motion on, the camera keeps flying into the next sheet.
-        let diving = background == .paper && motion > 0
-        choreographer.diving = diving
-        // The shot: where the cover is and how the camera looks at the background.
-        shot = choreographer.update(Choreographer.Input(
+        // The shot: where the cover is and how the camera looks at the background. With timed
+        // lyrics it holds still while a line is up and moves only in the gaps between lines.
+        var shotInput = Choreographer.Input(
             time: time, level: Double(audio.level), beatAge: input.beatAge, tempo: input.features.tempo,
             lyrics: input.lyricsAvailable, showCover: showCover && current?.art != nil,
-            trackID: input.trackID ?? currentLookID, active: input.active && !input.sideEnded))
-        let stages = advanceStages(diving: diving, aspect: aspect, bass: Double(audio.bass), level: Double(audio.level),
-                                   tempo: input.features.tempo, active: input.active, running: running, dt: dt)
-        self.stages = stages
-        let layout = stages.layout
+            trackID: input.trackID ?? currentLookID, active: input.active && !input.sideEnded)
+        shotInput.lineShowing = input.lyric != nil
+        shotInput.nextLineIn = input.lyricsAvailable ? input.nextLyricIn : nil
+        shot = choreographer.update(shotInput)
+        if shot.moving { foldFlow += dt * style.speed * running }
+        let layout = foldLayout(aspect: aspect, bass: Double(audio.bass))
         updatePrintedText(input, time: time, layout: layout, hasArt: current?.art != nil && showCover, sceneHeight: height)
 
         var uniforms = SceneUniforms()
@@ -358,11 +350,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         uniforms.cover = SIMD4(coverIndex, Float(dissolve), Float(recordAngle), Float(input.sideProgress))
         uniforms.scene = SIMD4(Float(windDown), Float(shot.cover.y), Float(shot.cover.rotation),
                                Float(shot.cover.visibility))
-        uniforms.setCamera(stages.camera)
-        if stages.diving, let dive {
-            uniforms.dive = SIMD4(1, Float(dive.phase), Float(Dive.scale), Float(Dive.pleats))
-            uniforms.diveCentre = SIMD4(Float(dive.centre.x), Float(dive.centre.y), Float(dive.normal.x), Float(dive.normal.y))
-        }
+        uniforms.setCamera(shot.camera.worldFromScreen(aspect: aspect))
         setInk(&uniforms, time: time, layout: layout)
         let previous = slots.count > 1 ? slots[1] : nil
         uniforms.slots = SIMD4(current?.art == nil ? 0 : 1, previous?.art == nil ? 0 : 1,
@@ -422,45 +410,23 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         return seed
     }
 
-    /// The fold composition for the album on screen now; each stage of the dive (`stage`)
-    /// gets its own, at an angle of its own.
-    private func foldLayout(aspect: Double, bass: Double, stage: Int = 0) -> FoldLayout {
+    /// The fold composition now: the album's own to start with, a new one after each move
+    /// (morphing during it). Two to four creases each, unless the art direction fixes the
+    /// count: a few long seams for the words to sit on.
+    private func foldLayout(aspect: Double, bass: Double) -> FoldLayout {
         let style = currentStyle
-        let seed = stage == 0 ? albumSeed : albumSeed ^ (UInt64(truncatingIfNeeded: stage) &* 0x9E37_79B9_7F4A_7C15)
-        return FoldLayout.make(seed: seed, aspect: aspect, flow: flow, bass: bass,
-                               angle: stage == 0 ? style.foldAngle : nil, count: style.foldCount,
-                               turbulence: style.turbulence)
-    }
-
-    /// Pulls the camera back (one stage every two bars, quicker when it's loud), and works out
-    /// this frame's sheets and camera.
-    private func advanceStages(diving: Bool, aspect: Double, bass: Double, level: Double, tempo: Double?,
-                               active: Bool, running: Double, dt: Double) -> Stages {
-        let camera = shot.camera.worldFromScreen(aspect: aspect)
-        let base = foldLayout(aspect: aspect, bass: bass)
-        guard diving else {
-            dive = nil
-            for i in lyricSlots.indices { lyricSlots[i].level = 0 }
-            return Stages(layout: base, pleats: nil, camera: camera, diving: false)
+        func make(_ composition: Int) -> FoldLayout {
+            let seed = composition == 0 ? albumSeed : albumSeed ^ (UInt64(truncatingIfNeeded: composition) &* 0x9E37_79B9_7F4A_7C15)
+            var rng = SeededRandom(seed: seed ^ 0xA9)
+            let angle = style.foldAngle.map { composition == 0 ? $0 : $0 + (rng.unit() - 0.5) * 24 }
+            return FoldLayout.make(seed: seed, aspect: aspect, flow: foldFlow, bass: bass,
+                                   angle: angle, count: style.foldCount ?? 2 + Int(rng.unit() * 2.99),
+                                   turbulence: style.turbulence)
         }
-        let key = "\(currentLookID ?? "")|\(Int(aspect * 100))"
-        if dive == nil || diveKey != key {
-            dive = Dive.make(seed: albumSeed, aspect: aspect)
-            diveKey = key
-        }
-        diveEnergy += (level - diveEnergy) * (1 - exp(-dt / 2))
-        let beatsPerSecond = (tempo.map { min(200, max(60, $0)) } ?? 110) / 60
-        let rate = beatsPerSecond / 8 * (0.6 + 0.8 * diveEnergy) * motion * running * (active ? 1 : 0.15)
-        let crossed = dive!.pullBack(by: rate * dt)
-        if crossed > 0 {
-            // A stage passed: every line is now one level further back; ones too far back
-            // have long since shrunk away.
-            for i in lyricSlots.indices { lyricSlots[i].level += crossed }
-            lyricSlots.removeAll { $0.level >= Dive.levels }
-        }
-        let dive = dive!
-        let pleats = FoldLayout(aspect: aspect, creases: dive.creases(reach: 3), tilt: base.tilt, light: base.light)
-        return Stages(layout: base, pleats: pleats, camera: dive.view() * camera, diving: true)
+        guard motion > 0, shot.composition > 0 else { return make(0) }
+        let to = make(shot.composition)
+        guard shot.progress < 1 else { return to }
+        return make(shot.composition - 1).morphed(to: to, shot.progress)
     }
 
     static func crease(_ c: FoldLayout.Crease) -> SIMD4<Float> {
@@ -492,38 +458,6 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    /// Pulling back: can a lyric put ink at level-0 point `p`? Whole on screen as it appears
-    /// and all the while it recedes, and clear of the cover and the caption.
-    private func printableWhileDiving(aspect: Double, hasArt: Bool) -> ((SIMD2<Double>) -> Bool)? {
-        guard let stages, stages.diving, let dive else { return nil }
-        let rest = stages.camera  // includes this frame's dive
-        let shotCamera = dive.view().inverse * rest
-        // A line lives a stage or so: it must stay whole on screen all that time, never cropped.
-        let futures = [0.0, 0.3, 0.6, 0.9, 1.2].map { ahead -> simd_double3x3 in
-            var d = dive
-            d.phase -= ahead
-            return (d.view() * shotCamera).inverse
-        }
-        let covers = hasArt ? [shot.cover, shot.targetCover] : []
-        var caption: CGRect?
-        if let slot = captionSlot, captionOpacity(slot, time: lastTime ?? 0) > 0 {
-            let f = captionFrame(slot, aspect: aspect)
-            caption = CGRect(x: f.centre.x - f.size.x / 2 - 0.02, y: f.centre.y - f.size.y / 2 - 0.02,
-                             width: f.size.x + 0.04, height: f.size.y + 0.04)
-        }
-        return { p in
-            let p0 = p
-            for m in futures {
-                // Readable as it appears and while it recedes.
-                guard let q = CameraPose.apply(m, p0).map({ $0 + SIMD2(aspect / 2, 0.5) }),
-                      q.x > 0.04, q.x < aspect - 0.04, q.y > 0.04, q.y < 0.96 else { return false }
-                if covers.contains(where: { $0.contains(q, aspect: aspect, padding: 0.035) }) { return false }
-                if let caption, caption.contains(CGPoint(x: q.x, y: q.y)) { return false }
-            }
-            return true
-        }
-    }
-
     private func updatePrintedText(_ input: VisualInput, time: Double, layout: FoldLayout, hasArt: Bool, sceneHeight: Int) {
         // Caption: a new track's caption soaks in, holds, soaks out.
         if let caption = input.caption, caption.id != captionSlot?.captionID {
@@ -545,17 +479,13 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         if lyricSlots.last?.id != input.lyric?.id || (input.lyric == nil && lyricSlots.last?.exitedAt == nil) {
             for i in lyricSlots.indices where lyricSlots[i].exitedAt == nil { lyricSlots[i].exitedAt = time }
             if let lyric = input.lyric {
-                // Pulling back: set along the pleats; the words recede with the paper.
-                let diveAllowed = printableWhileDiving(aspect: layout.aspect, hasArt: hasArt)
-                let pleats = stages?.pleats
-                let layout = pleats ?? layout
-                let allowed = diveAllowed ?? printable(aspect: layout.aspect, hasArt: hasArt, time: time)
-                let blocked = lyricSlots.filter { slotOpacity($0, time: time) > 0.05 && $0.level == 0 }.compactMap { slot in
+                let allowed = printable(aspect: layout.aspect, hasArt: hasArt, time: time)
+                let blocked = lyricSlots.filter { slotOpacity($0, time: time) > 0.05 }.compactMap { slot in
                         slotFrame(slot, layout: layout).map { boundingBox($0, size: slot.size) }
                     }
                 // Never drop a line: if it won't fit, let it share space with the line soaking
                 // out, then with the caption.
-                let relaxedAllowed = diveAllowed ?? printable(aspect: layout.aspect, hasArt: hasArt, time: time, avoidCaption: false)
+                let relaxedAllowed = printable(aspect: layout.aspect, hasArt: hasArt, time: time, avoidCaption: false)
                 placing: for (obstacles, test) in [(blocked, allowed), ([], allowed), ([], relaxedAllowed)] {
                     for size in Self.lyricSizes {
                         guard let text = lyricTexture(lyric.text, size: size, sceneHeight: sceneHeight),
@@ -563,8 +493,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
                                                      allowed: test) else { continue }
                         lyricSlots.append(PrintedSlot(id: lyric.id, captionID: nil, texture: text.texture, size: text.size,
                                                       spot: spot, enteredAt: time,
-                                                      words: LyricRasterizer.wordRanges(lyric.text).count, level: 0,
-                                                      fixed: pleats.map { $0.frame(for: spot, size: text.size) }))
+                                                      words: LyricRasterizer.wordRanges(lyric.text).count))
                         break placing
                     }
                 }
@@ -578,9 +507,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         if lyricSlots.count > 2 { lyricSlots.removeFirst(lyricSlots.count - 2) }
     }
 
-    /// Where a line sits: fixed on the pleats (pulling back), or along its crease now.
+    /// Where a line sits: along its crease, wherever the crease is now.
     private func slotFrame(_ slot: PrintedSlot, layout: FoldLayout) -> (centre: SIMD2<Double>, angle: Double)? {
-        if let fixed = slot.fixed { return fixed }
         guard let spot = slot.spot, spot.crease < layout.creases.count else { return nil }
         return layout.frame(for: spot, size: slot.size)
     }
@@ -626,10 +554,10 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     private func setInk(_ uniforms: inout SceneUniforms, time: Double, layout: FoldLayout) {
         func blur(_ opacity: Double, exiting: Bool) -> Float { Float(exiting ? (1 - opacity) * 3 : (1 - opacity) * 4.5) }
         func lyric(_ slot: PrintedSlot?) -> (SIMD4<Float>, SIMD4<Float>) {
-            guard let slot, slot.level < Dive.levels, let f = slotFrame(slot, layout: layout) else { return (.zero, .zero) }
+            guard let slot, let f = slotFrame(slot, layout: layout) else { return (.zero, .zero) }
             let o = slotOpacity(slot, time: time)
             return (SIMD4(Float(f.centre.x), Float(f.centre.y), Float(slot.size.x / 2), Float(slot.size.y / 2)),
-                    SIMD4(Float(f.angle), Float(o), blur(o, exiting: slot.exitedAt != nil), Float(slot.level)))
+                    SIMD4(Float(f.angle), Float(o), blur(o, exiting: slot.exitedAt != nil), 0))
         }
         let newest = lyricSlots.last
         let older = lyricSlots.count > 1 ? lyricSlots[lyricSlots.count - 2] : nil
@@ -721,8 +649,6 @@ struct SceneUniforms {
     /// World-from-screen homography rows (see `CameraPose.worldFromScreen`).
     var camera: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (SIMD4(1, 0, 0, 0), SIMD4(0, 1, 0, 0), SIMD4(0, 0, 1, 0))
 
-    var dive = SIMD4<Float>()
-    var diveCentre = SIMD4<Float>()
     mutating func setCamera(_ m: simd_double3x3) {
         let r = m.transpose
         func row(_ v: SIMD3<Double>) -> SIMD4<Float> { SIMD4(Float(v.x), Float(v.y), Float(v.z), 0) }
