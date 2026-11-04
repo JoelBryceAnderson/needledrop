@@ -18,6 +18,9 @@ jobs:
 
       - name: Toolchain
         run: |
+          # The newest Xcode on the runner: closest to what the app is developed with.
+          newest=$(ls /Applications | grep -E '^Xcode_[0-9.]+\.app$' | sort -V | tail -1)
+          if [ -n "$newest" ]; then sudo xcode-select -s "/Applications/$newest"; fi
           xcodebuild -version
           swift --version
           system_profiler SPDisplaysDataType | grep -E "Chipset|Metal" || true
