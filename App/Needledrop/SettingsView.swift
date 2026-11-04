@@ -157,6 +157,13 @@ struct SettingsView: View {
                 Text("Palette bleed only").tag(VisualMode.paletteBleed)
             }
             Toggle("Now-playing caption", isOn: $model.settings.showNowPlaying)
+            Toggle("Lyrics", isOn: $model.settings.showLyrics)
+            VStack(alignment: .leading, spacing: 4) {
+                SliderRow(title: "Output latency", value: $model.settings.outputLatency, range: 0...4, format: "%.2f s")
+                Text("How far the speakers lag the turntable. AirPlay to HomePods is usually about 2 s. Tune it until the beat dot and lyrics match what you hear.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Toggle("Debug overlay", isOn: $model.settings.showDebugOverlay)
         }
     }

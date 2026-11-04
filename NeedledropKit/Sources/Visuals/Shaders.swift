@@ -12,7 +12,7 @@ enum Shaders {
     struct Uniforms {
         float4 frame;   // resolution.x, resolution.y, flow (integrated time), brightness
         float4 audio;   // bass, mids, highs, level
-        float4 rhythm;  // beat, unused, mix (0 = previous slot, 1 = current), coverAmount
+        float4 rhythm;  // beat, lyricsPresence (cover makes room), mix (0 = previous slot, 1 = current), coverAmount
         float4 slots;   // hasArt0, hasArt1, hasMask0, hasMask1
         float4 palette0[6];
         float4 palette1[6];
@@ -99,8 +99,10 @@ enum Shaders {
     Cover livingCover(float2 uv, constant Uniforms &u, texture2d<float> art, texture2d<float> mask,
                       float hasMask, sampler s) {
         float aspect = u.frame.x / u.frame.y;
-        float2 p = (uv - 0.5) * float2(aspect, 1.0);
-        float size = 0.64 * (1.0 + 0.012 * u.rhythm.x);
+        // With lyrics up, the cover shrinks a little and rises to leave the lower band free.
+        float lyrics = u.rhythm.y;
+        float2 p = (uv - float2(0.5, 0.5 - 0.075 * lyrics)) * float2(aspect, 1.0);
+        float size = mix(0.64, 0.54, lyrics) * (1.0 + 0.012 * u.rhythm.x);
         float2 c = p / size + 0.5;
 
         float flow = u.frame.z;
@@ -153,6 +155,41 @@ enum Shaders {
         col *= 1.0 - dot(v, v) * 0.7;
         col *= u.frame.w;
         return float4(col, 1.0);
+    }
+
+    // --- Lyrics: one textured quad per line, alpha-blended (premultiplied) over the scene ---
+
+    struct TextUniforms {
+        float4 rect;   // centre.x, centre.y, half width, half height (scene uv, y down)
+        float4 style;  // opacity, glow, unused, unused
+        float4 color;
+    };
+
+    struct TOut {
+        float4 position [[position]];
+        float2 tex;
+    };
+
+    vertex TOut text_vertex(uint vid [[vertex_id]], constant TextUniforms &t [[buffer(0)]]) {
+        float2 corner = float2(vid & 1, vid >> 1);
+        float2 tex = corner * 1.3 - 0.15;              // overscan so shadow and glow aren't clipped
+        float2 uv = t.rect.xy + (tex * 2.0 - 1.0) * t.rect.zw;
+        TOut o;
+        o.position = float4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+        o.tex = tex;
+        return o;
+    }
+
+    fragment float4 text_fragment(TOut in [[stage_in]], constant TextUniforms &t [[buffer(0)]],
+                                  texture2d<float> text [[texture(0)]]) {
+        constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
+        float a = text.sample(s, in.tex).a;
+        // Blurred mips stand in for a drop shadow and a soft glow: cheap and smooth at 480 lines.
+        float shadow = text.sample(s, in.tex + float2(0.0, 0.035), level(3.0)).a;
+        float glow = text.sample(s, in.tex, level(4.5)).a;
+        float3 rgb = t.color.rgb * a + (1.0 - a) * t.color.rgb * glow * t.style.y;
+        float alpha = a + (1.0 - a) * max(shadow * 0.9, glow * t.style.y * 0.4);
+        return float4(rgb, alpha) * t.style.x;
     }
 
     // Upscale the low-res scene to the drawable. Bilinear is already soft at 480 lines,

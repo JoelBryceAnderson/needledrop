@@ -19,6 +19,10 @@ struct AppSettings: Codable, Equatable {
     var visualMode: VisualMode = .auto
     var showNowPlaying = true
     var showDebugOverlay = false
+    var showLyrics = true
+    /// Seconds the room hears the record after the Mac does (AirPlay to HomePods ≈ 2 s).
+    /// Visuals and lyrics are delayed by this much.
+    var outputLatency = 0.0
 
     private static let key = "settings.v1"
 
@@ -35,6 +39,8 @@ struct AppSettings: Codable, Equatable {
         visualMode = (try? c.decodeIfPresent(VisualMode.self, forKey: .visualMode)) ?? d.visualMode
         showNowPlaying = try c.decodeIfPresent(Bool.self, forKey: .showNowPlaying) ?? d.showNowPlaying
         showDebugOverlay = try c.decodeIfPresent(Bool.self, forKey: .showDebugOverlay) ?? d.showDebugOverlay
+        showLyrics = try c.decodeIfPresent(Bool.self, forKey: .showLyrics) ?? d.showLyrics
+        outputLatency = try c.decodeIfPresent(Double.self, forKey: .outputLatency) ?? d.outputLatency
     }
 
     static func load() -> AppSettings {

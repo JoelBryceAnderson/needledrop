@@ -1,5 +1,6 @@
 import AudioCapture
 import Foundation
+import Lyrics
 import Metadata
 import Recognition
 import SessionState
@@ -10,6 +11,8 @@ public struct SessionSnapshot: Sendable {
     public var phase: SessionPhase = .idle
     public var track: TrackMatch?
     public var metadata: TrackMetadata?
+    /// Lyrics for the current track, once fetched (nil while loading or if there are none).
+    public var lyrics: Lyrics?
     public var clock: PlaybackClock?
     public var unidentified = false
     public var isRecognizing = false
@@ -27,6 +30,7 @@ public enum EngineEvent: Sendable {
     case trackChanged(TrackMatch?)
     /// Metadata (and artwork bytes, if any) for the current track.
     case metadata(TrackMetadata, artwork: Data?)
+    case lyrics(Lyrics?)
     case recognitionError(String)
 }
 
@@ -39,6 +43,7 @@ public actor Engine {
 
     private let recognition: RecognitionController
     private let metadata: MetadataResolver?
+    private let lyricsProvider: LyricsProvider?
     private let continuation: AsyncStream<EngineEvent>.Continuation
     private let shared = Mutex(SessionSnapshot())
     private var machine: SessionMachine
@@ -48,11 +53,13 @@ public actor Engine {
         detector: SideDetectorConfig = SideDetectorConfig(),
         session: SessionConfig = SessionConfig(),
         recognizer: any TrackRecognizer,
-        metadata: MetadataResolver?
+        metadata: MetadataResolver?,
+        lyrics: LyricsProvider? = nil
     ) {
         let recognition = RecognitionController(recognizer: recognizer)
         self.recognition = recognition
         self.metadata = metadata
+        lyricsProvider = lyrics
         machine = SessionMachine(config: session)
         let pipeline = ListeningPipeline(config: detector, observer: recognition)
         self.pipeline = pipeline
@@ -108,7 +115,10 @@ public actor Engine {
             case .stopRecognition:
                 recognition.setListening(false)
             case .trackChanged(let track):
-                shared.withLock { $0.metadata = nil }
+                shared.withLock {
+                    $0.metadata = nil
+                    $0.lyrics = nil
+                }
                 continuation.yield(.trackChanged(track))
                 if let track { resolveMetadata(for: track) }
             }
@@ -140,5 +150,17 @@ public actor Engine {
         if let duration = info.duration {
             apply(.trackDuration(identity: track.identity, seconds: duration))
         }
+        if let lyricsProvider {
+            Task { [weak self] in
+                let lyrics = await lyricsProvider.lyrics(for: info)
+                await self?.lyricsResolved(lyrics, for: track)
+            }
+        }
+    }
+
+    private func lyricsResolved(_ lyrics: Lyrics?, for track: TrackMatch) {
+        guard machine.track?.identity == track.identity else { return }
+        shared.withLock { $0.lyrics = lyrics }
+        continuation.yield(.lyrics(lyrics))
     }
 }

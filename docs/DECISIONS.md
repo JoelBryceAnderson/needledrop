@@ -90,6 +90,32 @@ don't crossfade. A new album crossfades over 3 s. The picture holds for 20 s aft
 music stops (a flip, a lift), then fades out over 4 s. Text (the lower-third caption) is a
 SwiftUI overlay for now. Lyrics in M4 will move text into Metal, as recommended below.
 
+## Made in Milestone 4
+
+**Output latency.** The room hears the record through TV → Apple TV → AirPlay →
+HomePods, typically about 2 s after the Mac's interface does. The pipeline keeps the last
+5 s of per-hop features (`FeatureHistory`). The visuals and lyrics read them at
+"now − output latency", and the lyric position is taken from the playback clock at that
+same delayed audio time. The latency is a setting (0–4 s), tuned by eye against the beat
+dot. It defaults to 0 because it depends on the room.
+
+**Lyrics are rendered in Metal, one texture per line.** Each line is set once with Core
+Text (heavy rounded type, wrapping to two lines then shrinking), at twice the internal
+resolution, and mipmapped. The shader takes its drop shadow and glow from the blurred mip
+levels, so text composites into the scene and gets the same low-res treatment as
+everything else. A glyph atlas is only needed for the per-word animation planned in M7.
+
+**One kinetic style ("drift").** A line rises in over 0.4 s, floats, swells with level
+and beat, then drifts up and dissolves over 0.5 s as the next line arrives. When a track
+has synced lyrics, the cover shrinks and lifts to leave the lower band free, easing in
+over about a second.
+
+**LRCLIB:** an exact `get` (artist, title, album, duration) first; on a 404, a `search`
+that prefers synced results within ±5 s of the track's length. Hits are cached forever,
+"not found" for a week, and network errors aren't cached. Instrumentals show nothing. Plain
+(unsynced) lyrics are fetched but not shown: a static block of text on a TV isn't the
+experience. Lines are hidden while the playback clock's confidence is very low.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

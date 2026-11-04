@@ -33,18 +33,29 @@ public struct TrackMetadata: Sendable, Equatable, Codable {
 }
 
 public protocol HTTPClient: Sendable {
-    func data(from url: URL) async throws -> Data
+    /// GET `url`; throws `HTTPError.status` for non-2xx responses.
+    func get(_ url: URL, headers: [String: String]) async throws -> Data
+}
+
+public enum HTTPError: Error, Equatable {
+    case status(Int)
 }
 
 extension URLSession: HTTPClient {
-    public func data(from url: URL) async throws -> Data {
-        let (data, response) = try await data(from: url, delegate: nil)
+    public func get(_ url: URL, headers: [String: String]) async throws -> Data {
+        var request = URLRequest(url: url)
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        let (data, response) = try await data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw URLError(.badServerResponse)
+            throw HTTPError.status(http.statusCode)
         }
         return data
     }
 }
+
+/// Identifies the app to free APIs that ask clients to (LRCLIB, iTunes).
+public let needledropUserAgent = "Needledrop/0.4 (macOS turntable visualizer)"
+let userAgentHeader = ["User-Agent": needledropUserAgent]
 
 /// Resolves album/track info and artwork. Lookups go to the iTunes API (no auth) — by
 /// Apple Music ID when Shazam gave one, else a search on artist + title. Everything is
@@ -91,7 +102,7 @@ public actor MetadataResolver {
         guard let url = metadata.artworkURL else { return nil }
         let file = cacheDirectory.appendingPathComponent("artwork/\(Self.hash(metadata.collectionID ?? url.absoluteString)).img")
         if let data = try? Data(contentsOf: file) { return data }
-        guard let data = try? await http.data(from: url) else { return nil }
+        guard let data = try? await http.get(url, headers: userAgentHeader) else { return nil }
         try? data.write(to: file, options: .atomic)
         return data
     }
@@ -101,7 +112,7 @@ public actor MetadataResolver {
     private func lookup(id: String) async throws -> TrackMetadata? {
         var components = URLComponents(string: "https://itunes.apple.com/lookup")!
         components.queryItems = [.init(name: "id", value: id), .init(name: "entity", value: "song")]
-        let response = try JSONDecoder().decode(ITunesResponse.self, from: try await http.data(from: components.url!))
+        let response = try JSONDecoder().decode(ITunesResponse.self, from: try await http.get(components.url!, headers: userAgentHeader))
         return response.results.first { $0.kind == "song" }.map(Self.metadata)
     }
 
@@ -112,7 +123,7 @@ public actor MetadataResolver {
             .init(name: "entity", value: "song"),
             .init(name: "limit", value: "10"),
         ]
-        let response = try JSONDecoder().decode(ITunesResponse.self, from: try await http.data(from: components.url!))
+        let response = try JSONDecoder().decode(ITunesResponse.self, from: try await http.get(components.url!, headers: userAgentHeader))
         let wantTitle = Self.normalize(title), wantArtist = Self.normalize(artist)
         // Prefer an exact title + artist match, then anything whose title matches,
         // preferring albums over compilations (earliest release).
