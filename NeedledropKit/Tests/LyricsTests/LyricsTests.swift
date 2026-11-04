@@ -111,6 +111,21 @@ private final class FakeHTTP: HTTPClient {
         #expect(http.log.withLock { $0[0].1["User-Agent"]?.hasPrefix("Needledrop/") } == true)
     }
 
+    @Test func anExactMatchWithoutTimingKeepsLooking() async throws {
+        // LRCLIB's exact record for N95 has plain lyrics only; other uploads have them synced.
+        let http = FakeHTTP([
+            ("/get?", #"{"trackName":"Dreams","duration":258,"instrumental":false,"plainLyrics":"Now here you go"}"#),
+            ("/search?", #"[{"trackName":"Dreams","artistName":"Fleetwood Mac","duration":258,"syncedLyrics":"[00:12.00]Now here you go again"}]"#),
+        ])
+        let lyrics = try #require(await LyricsProvider(cacheDirectory: dir(), http: http).lyrics(for: dreams()))
+        #expect(lyrics.isSynced)
+        // Nothing synced anywhere: the plain text is still better than nothing.
+        let plainOnly = FakeHTTP([("/get?", #"{"trackName":"Dreams","duration":258,"plainLyrics":"Now here you go"}"#),
+                                  ("/search?", "[]")])
+        let fallback = try #require(await LyricsProvider(cacheDirectory: dir(), http: plainOnly).lyrics(for: dreams()))
+        #expect(!fallback.isSynced && fallback.plain == "Now here you go")
+    }
+
     @Test func searchFallbackPrefersSyncedAndClosestDuration() async throws {
         let http = FakeHTTP([("/search?", #"""
             [{"trackName":"Dreams","duration":300,"syncedLyrics":"[00:01.00]live version"},
