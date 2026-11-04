@@ -11,6 +11,10 @@ struct MenuBarContent: View {
             .keyboardShortcut("f", modifiers: [.command, .control])
         Button(model.settings.showDebugOverlay ? "Hide Debug Overlay" : "Show Debug Overlay") { model.toggleDebugOverlay() }
             .keyboardShortcut("d", modifiers: [.command, .control])
+        Toggle("Lyrics", isOn: Binding(get: { model.settings.showLyrics }, set: { _ in model.toggleLyrics() }))
+            .keyboardShortcut("l", modifiers: [.command, .control])
+        Toggle("Album Art", isOn: Binding(get: { model.settings.showCover }, set: { _ in model.toggleCover() }))
+            .keyboardShortcut("a", modifiers: [.command, .control])
         SettingsLink { Text("Settings…") }
             .keyboardShortcut(",")
         Divider()

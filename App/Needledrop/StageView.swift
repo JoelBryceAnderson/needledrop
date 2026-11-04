@@ -34,6 +34,14 @@ struct StageView: View {
             model.toggleDebugOverlay()
             return .handled
         }
+        .onKeyPress("l") {
+            model.toggleLyrics()
+            return .handled
+        }
+        .onKeyPress("a") {
+            model.toggleCover()
+            return .handled
+        }
     }
 }
 

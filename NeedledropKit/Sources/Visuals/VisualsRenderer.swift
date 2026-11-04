@@ -3,10 +3,11 @@ import MetalKit
 import QuartzCore
 import SignalAnalysis
 
-public enum VisualMode: String, Codable, CaseIterable, Sendable {
-    /// Living cover when there's artwork, palette bleed otherwise.
-    case auto
-    case paletteBleed
+public enum BackgroundStyle: String, Codable, CaseIterable, Sendable {
+    /// Folded paper: big flat planes in the album's colours.
+    case paper
+    /// The original palette-bleed flow.
+    case smoke
 }
 
 /// The lyric line to show this frame (already timed against what the room hears).
@@ -64,7 +65,9 @@ public enum VisualsError: Error, CustomStringConvertible {
 public final class VisualsRenderer: NSObject, MTKViewDelegate {
     public let device: any MTLDevice
     public var internalHeight = 480
-    public var mode: VisualMode = .auto
+    public var background: BackgroundStyle = .paper
+    /// Show the album cover (living cover) over the background.
+    public var showCover = true
     /// Called once per frame for audio and session state.
     public var inputProvider: (() -> VisualInput)?
 
@@ -84,7 +87,13 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
 
     private var slots: [Slot] = []
     private var director = SceneDirector()
-    private var drive = AudioDriveFilter()
+    private var drive: AudioDriveFilter = {
+        // Slower than the raw meter: the picture should move with the music, not twitch.
+        var d = AudioDriveFilter()
+        d.attack = 0.12
+        d.release = 0.6
+        return d
+    }()
     private var flow = 0.0
     private var lastTime: Double?
 
@@ -194,13 +203,14 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         let scene = sceneTarget(width: width, height: height)
 
         let current = slots.first
-        updateLyrics(input, time: time, dt: dt, sceneWidth: width, hasArt: current?.art != nil && mode != .paletteBleed)
+        updateLyrics(input, time: time, dt: dt, sceneWidth: width, hasArt: current?.art != nil && showCover)
 
         var uniforms = SceneUniforms()
         uniforms.frame = SIMD4(Float(width), Float(height), Float(flow), frame.brightness)
         uniforms.audio = SIMD4(audio.bass, audio.mids, audio.highs, audio.level)
         let presence = Float(lyricsPresence * lyricsPresence * (3 - 2 * lyricsPresence))
-        uniforms.rhythm = SIMD4(audio.beat, presence, slots.count > 1 ? frame.mix : 1, mode == .paletteBleed ? 0 : 1)
+        uniforms.rhythm = SIMD4(audio.beat, presence, slots.count > 1 ? frame.mix : 1, showCover ? 1 : 0)
+        uniforms.style = SIMD4(background == .paper ? 0 : 1, 0, 0, 0)
         let previous = slots.count > 1 ? slots[1] : nil
         uniforms.slots = SIMD4(current?.art == nil ? 0 : 1, previous?.art == nil ? 0 : 1,
                                current?.mask == nil ? 0 : 1, previous?.mask == nil ? 0 : 1)
@@ -334,6 +344,7 @@ struct SceneUniforms {
     var audio = SIMD4<Float>()
     var rhythm = SIMD4<Float>()
     var slots = SIMD4<Float>()
+    var style = SIMD4<Float>()
     var palette0 = SceneUniforms.emptyPalette
     var palette1 = SceneUniforms.emptyPalette
 

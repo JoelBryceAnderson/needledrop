@@ -18,7 +18,8 @@ let usage = """
                                                    Real-time through the live ring-buffer path
       needledrop-replay synth <out.wav> [--sample-rate HZ] [--seed N]
                                                    Write a synthetic side with known ground truth
-      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text"] [--seconds S] [--size WxH] [--palette-only]
+      needledrop-replay still <out.png> [--art cover.jpg] [--lyric "text"] [--style paper|smoke] [--no-cover]
+                               [--seconds S] [--size WxH]
                                                    Render visuals offscreen with synthetic music
       needledrop-replay devices                    List audio input devices
       needledrop-replay listen [--device UID] [options]
@@ -198,12 +199,14 @@ case "still":
     let lyricText = option("--lyric")
     let seconds = option("--seconds").flatMap(Double.init) ?? 4
     let size = (option("--size") ?? "1280x720").split(separator: "x").compactMap { Int($0) }
-    let paletteOnly = arguments.contains("--palette-only")
-    arguments.removeAll { $0 == "--palette-only" }
+    let noCover = arguments.contains("--no-cover")
+    arguments.removeAll { $0 == "--no-cover" }
+    let style = option("--style").flatMap(BackgroundStyle.init(rawValue:)) ?? .paper
     guard let path = arguments.first, size.count == 2 else { fail("still needs an output path (and --size WxH)") }
 
     let renderer = try VisualsRenderer()
-    if paletteOnly { renderer.mode = .paletteBleed }
+    renderer.showCover = !noCover
+    renderer.background = style
     if let artPath {
         guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: artPath) as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { fail("can't read \(artPath)") }

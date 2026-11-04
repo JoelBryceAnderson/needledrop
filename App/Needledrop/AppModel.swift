@@ -25,7 +25,7 @@ final class AppModel {
     var settings: AppSettings {
         didSet {
             settings.save()
-            renderer?.mode = settings.visualMode
+            applyVisualSettings()
             if settings.archive != oldValue.archive {
                 let archive = settings.archive
                 Task { await engine.updateArchiveSettings(archive) }
@@ -62,7 +62,7 @@ final class AppModel {
             renderer = nil
             log.append(LogEntry(text: "Visuals unavailable: \(error)"))
         }
-        renderer?.mode = settings.visualMode
+        applyVisualSettings()
         renderer?.inputProvider = { [weak self] in self?.visualInput() ?? VisualInput() }
     }
 
@@ -255,8 +255,21 @@ final class AppModel {
         }
     }
 
+    private func applyVisualSettings() {
+        renderer?.background = settings.background
+        renderer?.showCover = settings.showCover
+    }
+
     func toggleDebugOverlay() {
         settings.showDebugOverlay.toggle()
+    }
+
+    func toggleLyrics() {
+        settings.showLyrics.toggle()
+    }
+
+    func toggleCover() {
+        settings.showCover.toggle()
     }
 
     private func append(_ text: String) {

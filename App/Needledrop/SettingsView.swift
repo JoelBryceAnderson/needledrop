@@ -198,12 +198,13 @@ struct SettingsView: View {
                 get: { model.settings.fullScreen },
                 set: { _ in model.toggleFullScreen() }
             ))
-            Picker("Mode", selection: $model.settings.visualMode) {
-                Text("Auto (living cover)").tag(VisualMode.auto)
-                Text("Palette bleed only").tag(VisualMode.paletteBleed)
+            Picker("Background", selection: $model.settings.background) {
+                Text("Paper").tag(BackgroundStyle.paper)
+                Text("Smoke").tag(BackgroundStyle.smoke)
             }
+            Toggle("Album art  (A)", isOn: $model.settings.showCover)
             Toggle("Now-playing caption", isOn: $model.settings.showNowPlaying)
-            Toggle("Lyrics", isOn: $model.settings.showLyrics)
+            Toggle("Lyrics  (L)", isOn: $model.settings.showLyrics)
             VStack(alignment: .leading, spacing: 4) {
                 SliderRow(title: "Output latency", value: $model.settings.outputLatency, range: 0...4, format: "%.2f s")
                 Text("How far the speakers lag the turntable. AirPlay to HomePods is usually about 2 s. Tune it until the beat dot and lyrics match what you hear.")
