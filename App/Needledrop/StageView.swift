@@ -39,6 +39,10 @@ struct StageView: View {
             model.toggleFullScreen()
             return .handled
         }
+        .onKeyPress("f") {
+            model.toggleFullScreen()
+            return .handled
+        }
         .onKeyPress("d") {
             model.toggleDebugOverlay()
             return .handled

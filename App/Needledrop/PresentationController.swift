@@ -12,6 +12,9 @@ extension NSScreen {
 @MainActor
 final class PresentationController {
     var onDisplaysChanged: (() -> Void)?
+    /// The green button, ⌃⌘F and View › Enter Full Screen land here: Needledrop's own
+    /// full screen (borderless over the chosen display), not a macOS full-screen Space.
+    var onToggleFullScreen: (() -> Void)?
 
     private var window: VisualsWindow?
     private var cursorTimer: Timer?
@@ -37,6 +40,7 @@ final class PresentationController {
         let screen = Self.screen(displayID: displayID, displayName: displayName)
         let window = self.window ?? VisualsWindow()
         self.window = window
+        window.onToggleFullScreen = { [weak self] in self?.onToggleFullScreen?() }
 
         if fullScreen {
             window.styleMask = [.borderless]
@@ -52,7 +56,8 @@ final class PresentationController {
             let size = NSSize(width: 960, height: 540)
             let origin = NSPoint(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.midY - size.height / 2)
             window.setFrame(NSRect(origin: origin, size: size), display: true)
-            window.collectionBehavior = [.fullScreenNone]
+            // Shows the green full-screen button; VisualsWindow routes it to our own mode.
+            window.collectionBehavior = [.fullScreenPrimary]
             NSApp.presentationOptions = []
             stopHidingCursor()
         }
@@ -89,6 +94,14 @@ final class VisualsWindow: NSWindow {
         backgroundColor = .black
     }
 
+    var onToggleFullScreen: (() -> Void)?
+
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
+
+    /// The green button and ⌃⌘F: switch to (or out of) the borderless presentation rather
+    /// than a macOS full-screen Space, which can't follow the TV or hide the cursor.
+    override func toggleFullScreen(_ sender: Any?) {
+        if let onToggleFullScreen { onToggleFullScreen() } else { super.toggleFullScreen(sender) }
+    }
 }
