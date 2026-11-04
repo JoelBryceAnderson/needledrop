@@ -1,3 +1,4 @@
+import Archive
 import AudioCapture
 import Foundation
 import Lyrics
@@ -31,6 +32,7 @@ public enum EngineEvent: Sendable {
     /// Metadata (and artwork bytes, if any) for the current track.
     case metadata(TrackMetadata, artwork: Data?)
     case lyrics(Lyrics?)
+    case archived(ArchiveReport)
     case recognitionError(String)
 }
 
@@ -40,11 +42,16 @@ public enum EngineEvent: Sendable {
 public actor Engine {
     public nonisolated let pipeline: ListeningPipeline
     public nonisolated let events: AsyncStream<EngineEvent>
+    public nonisolated let archiver: Archiver?
 
     private let recognition: RecognitionController
     private let metadata: MetadataResolver?
     private let lyricsProvider: LyricsProvider?
     private let continuation: AsyncStream<EngineEvent>.Continuation
+    /// Archive events go through one stream so the archiver sees them in order.
+    private let archiveEvents: AsyncStream<ArchiveEvent>
+    private let archiveInbox: AsyncStream<ArchiveEvent>.Continuation
+    private var lastTick = 0.0
     private let shared = Mutex(SessionSnapshot())
     private var machine: SessionMachine
     private var tasks: [Task<Void, Never>] = []
@@ -54,14 +61,17 @@ public actor Engine {
         session: SessionConfig = SessionConfig(),
         recognizer: any TrackRecognizer,
         metadata: MetadataResolver?,
-        lyrics: LyricsProvider? = nil
+        lyrics: LyricsProvider? = nil,
+        archiver: Archiver? = nil
     ) {
         let recognition = RecognitionController(recognizer: recognizer)
         self.recognition = recognition
         self.metadata = metadata
         lyricsProvider = lyrics
+        self.archiver = archiver
+        (archiveEvents, archiveInbox) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         machine = SessionMachine(config: session)
-        let pipeline = ListeningPipeline(config: detector, observer: recognition)
+        let pipeline = ListeningPipeline(config: detector, observers: [recognition] + (archiver.map { [$0.recorder] } ?? []))
         self.pipeline = pipeline
         recognition.setSink { [weak pipeline] in pipeline?.post(.recognition($0)) }
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
@@ -77,12 +87,33 @@ public actor Engine {
             for await event in pipelineEvents { await self?.handle(event) }
             await self?.finish()
         })
+        if let archiver {
+            let inbox = archiveEvents
+            tasks.append(Task { [weak self] in
+                for await event in inbox {
+                    if let report = await archiver.handle(event) { await self?.archived(report) }
+                }
+            })
+        }
         try pipeline.start(source: source)
+    }
+
+    public nonisolated var isRecording: Bool { archiver?.recorder.isRecording ?? false }
+
+    public func updateArchiveSettings(_ settings: ArchiveSettings) {
+        archiveInbox.yield(.settings(settings))
+    }
+
+    private func archived(_ report: ArchiveReport) {
+        continuation.yield(.archived(report))
     }
 
     public func stop() {
         pipeline.stop()
         recognition.setListening(false)
+        archiver?.recorder.cancel()  // the archive task is cancelled below, so don't rely on .abandon
+        archiveInbox.yield(.abandon)
+        archiveInbox.finish()
         tasks.forEach { $0.cancel() }
         tasks = []
         continuation.finish()
@@ -93,8 +124,20 @@ public actor Engine {
     private func handle(_ event: PipelineEvent) {
         continuation.yield(.pipeline(event))
         switch event {
-        case .side(let side): apply(.side(side))
-        case .tick(let time, let phase): apply(.tick(time: time, detector: phase))
+        case .side(let side):
+            switch side {
+            case .sideStarted(let t): archiveInbox.yield(.sideStarted(at: t))
+            case .trackGap(let start, let end, _): archiveInbox.yield(.gap(start...end))
+            case .sideEnded(let start, let end, let reason): archiveInbox.yield(.sideEnded(start: start, end: end, reason: reason.rawValue))
+            case .gapStarted: break
+            }
+            apply(.side(side))
+        case .tick(let time, let phase):
+            lastTick = time
+            apply(.tick(time: time, detector: phase))
+            if machine.phase == .playing, let track = machine.track, let clock = machine.clock {
+                archiveInbox.yield(.trackSeen(track, clockStart: clock.trackStartTime, at: time))
+            }
         case .recognition(.match(let match, let time)): apply(.match(match, at: time))
         case .recognition(.error(let message)):
             shared.withLock { $0.lastRecognitionError = message }
@@ -147,6 +190,7 @@ public actor Engine {
         guard machine.track?.identity == track.identity else { return }  // already moved on
         shared.withLock { $0.metadata = info }
         continuation.yield(.metadata(info, artwork: artwork))
+        archiveInbox.yield(.metadata(identity: track.identity, info, artwork: artwork))
         if let duration = info.duration {
             apply(.trackDuration(identity: track.identity, seconds: duration))
         }

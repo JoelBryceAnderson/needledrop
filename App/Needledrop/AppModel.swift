@@ -1,4 +1,5 @@
 import AppKit
+import Archive
 import AudioCapture
 import Foundation
 import Lyrics
@@ -25,6 +26,10 @@ final class AppModel {
         didSet {
             settings.save()
             renderer?.mode = settings.visualMode
+            if settings.archive != oldValue.archive {
+                let archive = settings.archive
+                Task { await engine.updateArchiveSettings(archive) }
+            }
         }
     }
     /// Nil only if Metal is unavailable; the stage then stays black.
@@ -44,6 +49,8 @@ final class AppModel {
     private var eventTask: Task<Void, Never>?
     private let metadataResolver = MetadataResolver(cacheDirectory: MetadataResolver.defaultCacheDirectory)
     private let lyricsProvider = LyricsProvider(cacheDirectory: MetadataResolver.defaultCacheDirectory)
+    /// Plays, albums and archived recordings. Nil if the database can't be opened.
+    let library: Library? = try? Library(path: Library.defaultPath)
 
     init() {
         let settings = AppSettings.load()
@@ -126,7 +133,7 @@ final class AppModel {
         }
 
         let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver,
-                            lyrics: lyricsProvider)
+                            lyrics: lyricsProvider, archiver: Archiver(settings: settings.archive, library: library))
         self.engine = engine
         eventTask = Task { [weak self] in
             for await event in engine.events {
@@ -225,6 +232,11 @@ final class AppModel {
             } else {
                 append(lyrics?.plain == nil ? "No lyrics found" : "Only unsynced lyrics found")
             }
+        case .archived(let report):
+            let kept = report.tracks.filter { $0.path != nil }.count
+            let replacedNote = kept < report.tracks.count ? ", \(report.tracks.count - kept) already had better copies" : ""
+            append("Archived \(kept) track\(kept == 1 ? "" : "s")\(replacedNote)")
+            if let error = report.error { append("✖ Archive: \(error)") }
         case .recognitionError(let message):
             append("✖ \(message)")
         }

@@ -17,7 +17,7 @@ struct DebugOverlayView: View {
             GeometryReader { geometry in
                 let u = min(geometry.size.width / 64, geometry.size.height / 40)
                 OverlayLayout(snapshot: snapshot, session: session, metadata: model.metadata,
-                              artwork: model.artwork, log: model.log, u: u)
+                              artwork: model.artwork, recording: model.engine.isRecording, log: model.log, u: u)
                     .padding(u * 2)
                     .frame(width: geometry.size.width, height: geometry.size.height)
             }
@@ -31,6 +31,7 @@ private struct OverlayLayout: View {
     let session: SessionSnapshot
     let metadata: TrackMetadata?
     let artwork: NSImage?
+    let recording: Bool
     let log: [LogEntry]
     let u: CGFloat
 
@@ -71,6 +72,12 @@ private struct OverlayLayout: View {
                 .font(.system(size: u * 3, weight: .heavy, design: .rounded))
                 .foregroundStyle(phaseText.color)
             Spacer()
+            if recording {
+                Text("● REC")
+                    .font(.system(size: u * 1.8, weight: .heavy, design: .rounded))
+                    .foregroundStyle(.red)
+                    .padding(.trailing, u)
+            }
             BeatDot(snapshot: snapshot, u: u)
             Text(snapshot.features.tempo.map { String(format: "%.0f BPM", $0) } ?? "— BPM")
                 .font(.system(size: u * 3, weight: .heavy, design: .rounded).monospacedDigit())

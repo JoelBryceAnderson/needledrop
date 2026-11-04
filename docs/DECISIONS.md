@@ -116,6 +116,37 @@ that prefers synced results within ±5 s of the track's length. Hits are cached 
 (unsynced) lyrics are fetched but not shown: a static block of text on a TV isn't the
 experience. Lines are hidden while the playback clock's confidence is very low.
 
+## Made in Milestone 5
+
+**Recording is another observer on the analysis thread.** `SideRecorder` always keeps 6 s
+of audio, so a recording starts 1 s before the detected side start (which is confirmed
+~1.5 s after the music begins). It writes a float32 CAF at the source rate from a private
+queue, so the analysis thread never waits on the disk. A 0.1 s RMS envelope is recorded
+alongside, for splitting.
+
+**Splitting** (`TrackSplitter`, pure, fixture-tested):
+1. Cut at the middle of each detected gap.
+2. Give each identified track the segment it was current in. A segment with no track whose
+   neighbour should still be playing (by its iTunes length) was a quiet passage, so merge it
+   back. Slow intros merge forward the same way.
+3. A segment holding two tracks is a segue: split near the later track's clock start,
+   snapped to the quietest point within ±4 s. With no ≥6 dB dip, the boundary is marked
+   uncertain, which also goes in the file's comment tag.
+
+**Encoding:** ALAC `.m4a` or FLAC at the source rate, with a 24-bit target and 5 ms fades at
+the cuts. M4A gets iTunes atoms via an AVFoundation passthrough export. FLAC gets Vorbis
+comments and a picture block written directly, because AVFoundation can't tag FLAC.
+
+**Dedup ("keep best") is per track identity:** no clipping beats clipping, then the higher
+RMS wins. A worse new recording is discarded; a better one replaces the old file. Unknown
+tracks are always kept, under `Unknown/<date>/`.
+
+**Plays are logged even with archiving off**, along with album artwork, for the library
+wall in M7.
+
+**GRDB** is the only third-party dependency (7.x). The schema is album, track, side,
+recording and play, with migrations from v1.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),
