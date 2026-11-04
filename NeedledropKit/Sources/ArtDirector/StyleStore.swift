@@ -1,0 +1,96 @@
+import CryptoKit
+import Foundation
+import Security
+
+/// Every direction Claude has given each album, which one is current, and whether it's
+/// pinned (a pinned look survives re-rolls). On disk, one JSON file per album.
+public actor StyleStore {
+    public struct Record: Codable, Sendable, Equatable {
+        public var spec: StyleSpec
+        public var model: String
+        public var created: Date
+    }
+
+    private struct Entry: Codable {
+        var history: [Record] = []
+        var current = 0
+        var pinned = false
+    }
+
+    private let directory: URL
+
+    public init(directory: URL) {
+        self.directory = directory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    public func current(for key: String) -> StyleSpec? {
+        let entry = read(key)
+        return entry.history.indices.contains(entry.current) ? entry.history[entry.current].spec : nil
+    }
+
+    public func history(for key: String) -> [StyleSpec] { read(key).history.map(\.spec) }
+
+    public func isPinned(_ key: String) -> Bool { read(key).pinned }
+
+    public func setPinned(_ pinned: Bool, for key: String) {
+        var entry = read(key)
+        guard !entry.history.isEmpty else { return }
+        entry.pinned = pinned
+        write(entry, key)
+    }
+
+    public func add(_ spec: StyleSpec, for key: String, model: String) {
+        var entry = read(key)
+        entry.history.append(Record(spec: spec, model: model, created: Date()))
+        entry.current = entry.history.count - 1
+        write(entry, key)
+    }
+
+    private func file(_ key: String) -> URL {
+        let hash = SHA256.hash(data: Data(key.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent("\(hash).json")
+    }
+
+    private func read(_ key: String) -> Entry {
+        (try? Data(contentsOf: file(key))).flatMap { try? JSONDecoder().decode(Entry.self, from: $0) } ?? Entry()
+    }
+
+    private func write(_ entry: Entry, _ key: String) {
+        try? JSONEncoder().encode(entry).write(to: file(key), options: .atomic)
+    }
+}
+
+/// The Anthropic API key, kept in the login keychain.
+public enum APIKeyStore {
+    static let service = "com.needledrop.Needledrop"
+    static let account = "anthropic-api-key"
+
+    /// The saved key, else `ANTHROPIC_API_KEY` from the environment (handy in development).
+    public static func load() -> String? {
+        var query = baseQuery
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data,
+           let key = String(data: data, encoding: .utf8), !key.isEmpty {
+            return key
+        }
+        return ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"].flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Saves (or, with an empty string, deletes) the key.
+    @discardableResult
+    public static func save(_ key: String) -> Bool {
+        SecItemDelete(baseQuery as CFDictionary)
+        guard !key.isEmpty else { return true }
+        var item = baseQuery
+        item[kSecValueData as String] = Data(key.utf8)
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+    }
+
+    private static var baseQuery: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+    }
+}

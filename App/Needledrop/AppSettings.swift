@@ -1,7 +1,18 @@
 import Archive
+import ArtDirector
 import Foundation
 import SessionState
 import Visuals
+
+/// The Theme setting: let the art director choose per album, or force one look.
+enum AppTheme: String, Codable, CaseIterable {
+    case auto, paper, smoke, googie
+}
+
+struct ArtDirectorSettings: Codable, Equatable {
+    var enabled = true
+    var model = ClaudeClient.defaultModel
+}
 
 enum InputSelection: Codable, Hashable {
     case systemDefault
@@ -17,7 +28,8 @@ struct AppSettings: Codable, Equatable {
     var displayID: UInt32?
     var displayName: String?
     var fullScreen = true
-    var background: BackgroundStyle = .paper
+    var theme: AppTheme = .auto
+    var artDirector = ArtDirectorSettings()
     var showCover = true
     var showNowPlaying = true
     var showDebugOverlay = false
@@ -39,7 +51,8 @@ struct AppSettings: Codable, Equatable {
         displayID = try c.decodeIfPresent(UInt32.self, forKey: .displayID)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         fullScreen = try c.decodeIfPresent(Bool.self, forKey: .fullScreen) ?? d.fullScreen
-        background = (try? c.decodeIfPresent(BackgroundStyle.self, forKey: .background)) ?? d.background
+        theme = (try? c.decodeIfPresent(AppTheme.self, forKey: .theme)) ?? d.theme
+        artDirector = (try? c.decodeIfPresent(ArtDirectorSettings.self, forKey: .artDirector)) ?? d.artDirector
         showCover = try c.decodeIfPresent(Bool.self, forKey: .showCover) ?? d.showCover
         showNowPlaying = try c.decodeIfPresent(Bool.self, forKey: .showNowPlaying) ?? d.showNowPlaying
         showDebugOverlay = try c.decodeIfPresent(Bool.self, forKey: .showDebugOverlay) ?? d.showDebugOverlay

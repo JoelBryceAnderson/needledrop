@@ -12,6 +12,8 @@ import Testing
         let a = FoldLayout.make(seed: 1, aspect: aspect, flow: 0)
         let b = FoldLayout.make(seed: 2, aspect: aspect, flow: 0)
         #expect(a.creases.count == 3)
+        #expect(FoldLayout.make(seed: 1, aspect: aspect, flow: 0, angle: 20, count: 2).creases.count == 2)
+        #expect(abs(FoldLayout.make(seed: 1, aspect: aspect, flow: 0, angle: 20).creases[0].angle - 20 * .pi / 180) < 0.06)
         #expect(a != b)
         #expect(FoldLayout.make(seed: 1, aspect: aspect, flow: 0) == a)  // deterministic
         // Roughly parallel, and ordered: the strip index climbs 0…3 across the frame.
@@ -19,7 +21,7 @@ import Testing
         #expect(angles.max()! - angles.min()! < 0.1)
         let n = a.creases[0].normal
         let far = SIMD2(aspect / 2, 0.5) + n * 3, near = SIMD2(aspect / 2, 0.5) - n * 3
-        #expect(a.strip(at: near) == 0 && a.strip(at: far) == 3)
+        #expect(a.strip(at: near) == 0 && a.strip(at: far) == a.creases.count)
     }
 
     @Test func linesAreSetAlongACreaseOnScreenAndClearOfTheCover() throws {

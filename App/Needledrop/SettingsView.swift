@@ -1,4 +1,5 @@
 import Archive
+import ArtDirector
 import AudioCapture
 import SessionState
 import SwiftUI
@@ -13,6 +14,7 @@ struct SettingsView: View {
             inputSection
             detectionSection
             displaySection
+            ArtDirectorSection(model: model)
             archiveSection
             Section("General") {
                 Toggle("Launch at login", isOn: Binding(
@@ -198,9 +200,11 @@ struct SettingsView: View {
                 get: { model.settings.fullScreen },
                 set: { _ in model.toggleFullScreen() }
             ))
-            Picker("Background", selection: $model.settings.background) {
-                Text("Paper").tag(BackgroundStyle.paper)
-                Text("Smoke").tag(BackgroundStyle.smoke)
+            Picker("Theme", selection: $model.settings.theme) {
+                Text("Auto (art director chooses)").tag(AppTheme.auto)
+                Text("Paper").tag(AppTheme.paper)
+                Text("Googie").tag(AppTheme.googie)
+                Text("Smoke").tag(AppTheme.smoke)
             }
             Toggle("Album art  (A)", isOn: $model.settings.showCover)
             Toggle("Now-playing caption", isOn: $model.settings.showNowPlaying)
@@ -234,5 +238,51 @@ private struct SliderRow<Value: BinaryFloatingPoint>: View where Value.Stride: B
                 .monospacedDigit()
                 .frame(width: 64, alignment: .trailing)
         }
+    }
+}
+
+private struct ArtDirectorSection: View {
+    @Bindable var model: AppModel
+    @State private var key = ""
+    @State private var hasKey = false
+
+    var body: some View {
+        Section {
+            Toggle("Claude designs each album's look", isOn: $model.settings.artDirector.enabled)
+            HStack {
+                SecureField(hasKey ? "Saved in the keychain" : "Anthropic API key", text: $key)
+                Button("Save") {
+                    model.saveAPIKey(key)
+                    key = ""
+                    hasKey = model.hasAPIKey
+                }
+                .disabled(key.isEmpty)
+                if hasKey {
+                    Button("Remove") {
+                        model.saveAPIKey("")
+                        hasKey = model.hasAPIKey
+                    }
+                }
+            }
+            TextField("Model", text: $model.settings.artDirector.model)
+            HStack {
+                Text(model.artDirectionStatus)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer()
+                Toggle("Pin", isOn: $model.currentLookPinned)
+                    .toggleStyle(.checkbox)
+                    .disabled(model.currentAlbumKey == nil)
+                Button("Re-roll") { model.rerollAlbumLook() }
+                    .disabled(model.currentAlbumKey == nil || model.currentLookPinned || !hasKey)
+            }
+        } header: {
+            Text("Art Director")
+        } footer: {
+            Text("One request per new album, cached afterwards. Claude picks the palette, folds, motion and type, and may write a custom shader, which is compiled and test-rendered before it's ever shown.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear { hasKey = model.hasAPIKey }
     }
 }

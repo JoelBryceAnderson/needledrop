@@ -27,14 +27,17 @@ struct FoldLayout: Equatable {
     /// The light, slowly swinging so strips take turns catching it.
     var light: SIMD3<Double>
 
-    static let creaseCount = 3
+    static let maximumCreases = 4
 
     /// A composition for an album (`seed`) at animation time `flow`. The creases drift a
-    /// little; the base geometry is the album's own.
-    static func make(seed: UInt64, aspect: Double, flow: Double, bass: Double = 0) -> FoldLayout {
+    /// little; the base geometry is the album's own unless the art direction fixes the
+    /// angle or count.
+    static func make(seed: UInt64, aspect: Double, flow: Double, bass: Double = 0,
+                     angle: Double? = nil, count: Int? = nil, turbulence: Double = 0.5) -> FoldLayout {
         var rng = SeededRandom(seed: seed ^ 0xF01D)
         // A dramatic diagonal, leaning one way or the other.
-        let lean = (12 + 22 * rng.unit()) * (rng.unit() < 0.5 ? -1 : 1)
+        let seededLean = (12 + 22 * rng.unit()) * (rng.unit() < 0.5 ? -1 : 1)
+        let lean = angle ?? seededLean
         let base = lean * .pi / 180
         let normal = SIMD2(-sin(base), cos(base))
         let centre = SIMD2(aspect / 2, 0.5)
@@ -43,15 +46,17 @@ struct FoldLayout: Equatable {
         let corners = [SIMD2(0.0, 0.0), SIMD2(aspect, 0), SIMD2(0, 1), SIMD2(aspect, 1)]
         let extents = corners.map { simd_dot($0 - centre, normal) }
         let lo = extents.min()!, hi = extents.max()!
-        let fractions = [0.27, 0.53, 0.78]
+        let n = min(maximumCreases, max(2, count ?? 3))
+        let fractions = (0..<n).map { (Double($0) + 0.8) / (Double(n) + 0.6) }
+        let wander = 0.5 + turbulence
 
         var creases: [Crease] = []
         for (i, f) in fractions.enumerated() {
             let jitter = (rng.unit() - 0.5) * 0.08
-            let wobble = 0.018 * sin(flow * 0.2 + Double(i) * 2.1)
+            let wobble = 0.018 * wander * sin(flow * 0.2 + Double(i) * 2.1)
             let offset = lo + (hi - lo) * (f + jitter) + wobble
-            let angle = base + (rng.unit() - 0.5) * 0.07 + 0.02 * sin(flow * 0.13 + Double(i))
-            creases.append(Crease(point: centre + normal * offset, angle: angle))
+            let creaseAngle = base + (rng.unit() - 0.5) * 0.07 + 0.02 * wander * sin(flow * 0.13 + Double(i))
+            creases.append(Crease(point: centre + normal * offset, angle: creaseAngle))
         }
 
         let tilt = 0.5 * (0.8 + 0.2 * sin(flow * 0.15)) + 0.08 * bass

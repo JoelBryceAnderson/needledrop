@@ -10,12 +10,16 @@ public struct AlbumLook: @unchecked Sendable {  // CGImage is immutable
     public var palette: Palette
     public var artwork: CGImage?
     public var subjectMask: CGImage?
+    /// Art direction: from Claude, a built-in theme, or defaults.
+    public var style: LookStyle
 
-    public init(id: String, palette: Palette, artwork: CGImage? = nil, subjectMask: CGImage? = nil) {
+    public init(id: String, palette: Palette, artwork: CGImage? = nil, subjectMask: CGImage? = nil,
+                style: LookStyle = LookStyle()) {
         self.id = id
         self.palette = palette
         self.artwork = artwork
         self.subjectMask = subjectMask
+        self.style = style
     }
 
     /// Unknown records and the moments before the first match.

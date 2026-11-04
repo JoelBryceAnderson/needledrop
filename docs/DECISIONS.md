@@ -147,6 +147,50 @@ wall in M7.
 **GRDB** is the only third-party dependency (7.x). The schema is album, track, side,
 recording and play, with migrations from v1.
 
+## Made in Milestone 6
+
+**Raw HTTP to the Messages API.** Swift has no official Anthropic SDK. Requests go to
+`claude-opus-5-5` by default (configurable), with:
+- adaptive thinking (the model default) at `effort: high`;
+- the style spec as structured output (`output_config.format`, JSON schema);
+- the cover as a base64 image block;
+- server-side refusal fallbacks (`fallbacks: "default"`).
+
+`stop_reason` is checked before anything is read: a refusal or `max_tokens` is an error,
+never a half-read spec. The API key lives in the login keychain, with
+`ANTHROPIC_API_KEY` as a development fallback.
+
+**What Claude controls:**
+- palette;
+- background: paper, googie, or a custom shader;
+- fold angle and count, which also set the lyric composition;
+- motion: speed, bass response, beat response, turbulence;
+- typography: font, weight, case, and ink or typewriter animation;
+- mode weights;
+- mood.
+
+Anything the schema can't express (hex colours, ranges) is validated in Swift and clamped.
+
+**The shader sandbox:** Claude writes only the body of `customScene(uv, u, pal)`, against a
+fixed contract of variables and helper functions. The body is:
+1. screened: under 6,000 characters; no preprocessor, resources, `while` or `goto`;
+2. compiled with an 8 s timeout;
+3. rendered through a probe fragment (the background alone) at three times and audio states,
+   rejecting NaN or infinite values and frames that are black, white or flat;
+4. timed at 854×480 against an 8 ms GPU budget.
+
+A failed spec or shader goes back to Claude once, with the exact reason and its own reply
+echoed (thinking blocks included). A second failure keeps the rest of the direction on paper.
+
+**Budget:** one request per new album. Directions are cached on disk with their history.
+Re-roll asks for something different, passing the earlier moods, unless the look is pinned.
+The extracted-palette look shows immediately and crossfades to Claude's direction when it
+arrives.
+
+**Googie is a built-in background,** not just a prompt: kidney shapes, crescent boomerangs,
+eight-point starbursts and an atom motif in flat palette colour, with geometric uppercase
+type. The Theme setting (Auto / Paper / Googie / Smoke) forces a look or lets Claude choose.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

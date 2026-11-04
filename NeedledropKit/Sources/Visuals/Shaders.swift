@@ -4,6 +4,14 @@
 /// Everything here is low-frequency on purpose: soft gradients, big shapes, no fine
 /// texture. It renders at 480 lines and has to survive composite video on a big TV.
 enum Shaders {
+    /// The scene source with Claude's body in the custom slot (nil: the default body).
+    static func source(customBody: String?) -> String {
+        guard let customBody,
+              let begin = source.range(of: "// CUSTOM-BODY\n"),
+              let end = source.range(of: "// CUSTOM-BODY-END") else { return source }
+        return source.replacingCharacters(in: begin.upperBound..<end.lowerBound, with: customBody + "\n")
+    }
+
     static let source = #"""
     #include <metal_stdlib>
     using namespace metal;
@@ -14,7 +22,7 @@ enum Shaders {
         float4 audio;   // bass, mids, highs, level
         float4 rhythm;  // beat, unused, mix (0 = previous slot, 1 = current), coverAmount
         float4 slots;   // hasArt0, hasArt1, hasMask0, hasMask1
-        float4 style;   // background (0 = paper, 1 = smoke), cover centre x (uv), cover size (frame heights), unused
+        float4 style;   // background (0 paper, 1 smoke, 2 googie, 3 custom), cover centre x (uv), cover size (frame heights), unused
         // Two lyric lines printed on the scene. a: centre.xy, half size.xy (height units, x
         // across aspect); b: angle, opacity, blur (mip level), unused.
         float4 ink0a;
@@ -23,7 +31,7 @@ enum Shaders {
         float4 ink1b;
         float4 ink2a;   // the now-playing caption, printed the same way
         float4 ink2b;
-        float4 crease[3]; // normal.xy, offset (dot(q, normal) > offset = past it), active
+        float4 crease[4]; // normal.xy, offset (dot(q, normal) > offset = past it), active
         float4 fold;    // tilt (radians), accent strip, unused, unused
         float4 light;   // xyz
         float4 palette0[6];
@@ -123,6 +131,20 @@ enum Shaders {
         return 1.0 - (1.0 - a0) * (1.0 - a1) * (1.0 - a2);
     }
 
+    /// The centre (uv) of whichever line has the most ink at `uv`, so a line can take one
+    /// ink colour throughout instead of flipping where it crosses light and dark shapes.
+    float2 inkCentre(float2 uv, constant Uniforms &u, texture2d<float> ink0, texture2d<float> ink1,
+                     texture2d<float> ink2) {
+        constexpr sampler s(filter::linear, mip_filter::linear, address::clamp_to_zero);
+        float aspect = u.frame.x / u.frame.y;
+        float2 q = float2(uv.x * aspect, uv.y);
+        float a0 = inkLine(q, u.ink0a, u.ink0b, ink0, s);
+        float a1 = inkLine(q, u.ink1a, u.ink1b, ink1, s);
+        float a2 = inkLine(q, u.ink2a, u.ink2b, ink2, s);
+        float2 c = a0 >= a1 && a0 >= a2 ? u.ink0a.xy : (a1 >= a2 ? u.ink1a.xy : u.ink2a.xy);
+        return float2(c.x / aspect, c.y);
+    }
+
     /// Printed in the palette's darkest or lightest colour, whichever stands out from the paper.
     float3 inkColor(float3 paper, constant float4 *pal) {
         float lum = dot(paper, float3(0.2126, 0.7152, 0.0722));
@@ -134,7 +156,7 @@ enum Shaders {
     /// Strip index at q: how many creases q is past. Strips alternate mountain / valley.
     int stripAt(float2 q, constant Uniforms &u) {
         int k = 0;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             float4 c = u.crease[i];
             if (c.w > 0.5 && dot(q, c.xy) > c.z) k++;
         }
@@ -155,7 +177,7 @@ enum Shaders {
             float2 suv = uv + offsets[s] / u.frame.xy;
             float2 q = float2(suv.x * aspect, suv.y);
             int k = stripAt(q, u);
-            float2 m = u.crease[min(k, 2)].xy;
+            float2 m = u.crease[0].xy;  // the creases run (nearly) parallel
             float sgn = (k % 2 == 0) ? 1.0 : -1.0;
             float3 n = normalize(float3(m * sin(tilt) * sgn, cos(tilt)));
             float lit = 0.38 + 0.85 * max(0.0, dot(n, light));
@@ -167,6 +189,95 @@ enum Shaders {
             sum += c;
         }
         return sum * 0.25;
+    }
+
+    // --- Googie: mid-century atomic-age shapes in flat colour ---------------------
+
+    float2 rot2(float2 p, float a) {
+        float c = cos(a), s = sin(a);
+        return float2(c * p.x - s * p.y, s * p.x + c * p.y);
+    }
+
+    float modPositive(float x, float y) { return x - y * floor(x / y); }
+
+    /// n-pointed star, outer radius r, sharpness m in [2, n].
+    float sdStar(float2 p, float r, int n, float m) {
+        float an = 3.141593 / float(n);
+        float en = 3.141593 / m;
+        float2 acs = float2(cos(an), sin(an));
+        float2 ecs = float2(cos(en), sin(en));
+        float bn = modPositive(atan2(p.x, p.y), 2.0 * an) - an;
+        p = length(p) * float2(cos(bn), abs(sin(bn)));
+        p -= r * acs;
+        p += ecs * clamp(-dot(p, ecs), 0.0, r * acs.y / ecs.y);
+        return length(p) * sign(p.x);
+    }
+
+    float smin(float a, float b, float k) {
+        float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+        return mix(b, a, h) - k * h * (1.0 - h);
+    }
+
+    float3 googie(float2 uv, constant Uniforms &u, constant float4 *pal) {
+        float aspect = u.frame.x / u.frame.y;
+        float2 p = (uv - 0.5) * float2(aspect, 1.0);
+        float t = u.frame.z;
+        float px = 1.5 / u.frame.y;
+        float bass = u.audio.x, beat = u.rhythm.x;
+        // Cream ground, warmed by the album's lightest colour.
+        float3 col = mix(float3(0.95, 0.91, 0.82), pal[5].rgb, 0.25);
+        // Kidney shapes drifting slowly behind everything.
+        for (int i = 0; i < 3; i++) {
+            float fi = float(i);
+            float2 c = float2(sin(t * 0.07 + fi * 2.1) * aspect * 0.35, cos(t * 0.05 + fi * 1.7) * 0.28);
+            float2 q = rot2(p - c, t * 0.03 + fi);
+            float d = smin(length(q - float2(-0.09, 0.0)) - 0.15, length(q - float2(0.1, 0.03)) - 0.12, 0.08);
+            d = max(d, -(length(q - float2(0.01, 0.13)) - 0.07));
+            col = mix(col, pal[2 + i % 2].rgb, 1.0 - smoothstep(-px, px, d));
+        }
+        // Boomerangs (crescents), wheeling.
+        for (int i = 0; i < 4; i++) {
+            float fi = float(i);
+            float2 c = float2(sin(t * 0.11 + fi * 1.3 + 0.5) * aspect * 0.42, sin(t * 0.09 + fi * 2.4) * 0.36);
+            float2 q = rot2(p - c, t * (0.15 + 0.05 * fi) + fi * 1.57);
+            float r = 0.075 + 0.02 * fi;
+            float d = max(length(q) - r, -(length(q - float2(0.035, 0.03)) - r * 0.92));
+            col = mix(col, pal[1].rgb, 1.0 - smoothstep(-px, px, d));
+        }
+        // Starbursts: swell with bass, flash on the beat.
+        for (int i = 0; i < 5; i++) {
+            float fi = float(i);
+            float2 c = (float2(hash21(float2(fi, 3.1)), hash21(float2(fi, 7.7))) - 0.5) * float2(aspect * 0.9, 0.85);
+            c += 0.03 * float2(sin(t * 0.2 + fi), cos(t * 0.17 + fi));
+            float size = (0.035 + 0.03 * hash21(float2(fi, 1.9))) * (1.0 + 0.35 * bass + 0.25 * beat);
+            float d = sdStar(rot2(p - c, t * 0.2 * (fi - 2.0)), size, 8, 3.0);
+            float3 star = (i % 2 == 0) ? pal[4].rgb : pal[0].rgb;
+            col = mix(col, star, 1.0 - smoothstep(-px, px, d));
+        }
+        // An atom: three orbit rings round a nucleus (lines kept thick enough for 480i).
+        float2 nucleus = float2(aspect * 0.36, -0.3) + 0.02 * float2(sin(t * 0.3), cos(t * 0.27));
+        for (int k = 0; k < 3; k++) {
+            float2 q = rot2(p - nucleus, float(k) * 1.047 + t * 0.1);
+            float d = abs(length(q * float2(1.0, 2.6)) - 0.11) / 2.0 - 0.004;
+            col = mix(col, pal[0].rgb, 1.0 - smoothstep(-px, px, d));
+        }
+        float dn = length(p - nucleus) - 0.02 * (1.0 + 0.5 * beat);
+        return mix(col, pal[3].rgb, 1.0 - smoothstep(-px, px, dn));
+    }
+
+    // --- Custom: Claude's fragment body goes between the CUSTOM-BODY markers ----------
+
+    float3 customScene(float2 uv, constant Uniforms &u, constant float4 *pal) {
+        float2 resolution = u.frame.xy;
+        float aspect = resolution.x / resolution.y;
+        float time = u.frame.z;
+        float bass = u.audio.x, mids = u.audio.y, highs = u.audio.z, level = u.audio.w;
+        float beat = u.rhythm.x;
+        {
+    // CUSTOM-BODY
+            return paletteBleed(uv, u, pal) + 0.0 * (aspect + time + bass + mids + highs + level + beat + resolution.x);
+    // CUSTOM-BODY-END
+        }
     }
 
     // --- Living cover: artwork with the subject floating off its background ---
@@ -210,15 +321,27 @@ enum Shaders {
         return o;
     }
 
+    float3 flatBackground(int background, float2 uv, constant Uniforms &u, constant float4 *pal) {
+        return background == 1 ? paletteBleed(uv, u, pal)
+             : background == 2 ? googie(uv, u, pal)
+             : customScene(uv, u, pal);
+    }
+
     float3 slotColor(float2 uv, constant Uniforms &u, constant float4 *pal,
                      texture2d<float> art, texture2d<float> mask, float hasArt, float hasMask, sampler s,
                      texture2d<float> ink0, texture2d<float> ink1, texture2d<float> ink2) {
         float3 base;
-        if (u.style.x < 0.5) {
+        int background = int(u.style.x + 0.5);
+        if (background == 0) {
             base = paper(uv, u, pal, ink0, ink1, ink2);
         } else {
-            base = paletteBleed(uv, u, pal);
-            base = mix(base, inkColor(base, pal), inkAt(uv, u, ink0, ink1, ink2) * 0.92);
+            base = flatBackground(background, uv, u, pal);
+            float ink = inkAt(uv, u, ink0, ink1, ink2);
+            if (ink > 0.001) {
+                // One ink colour per line, chosen against the background at its centre.
+                float3 under = flatBackground(background, inkCentre(uv, u, ink0, ink1, ink2), u, pal);
+                base = mix(base, inkColor(under, pal), ink * 0.92);
+            }
         }
         float amount = u.rhythm.w * hasArt;
         if (amount > 0.001) {
@@ -248,6 +371,11 @@ enum Shaders {
         col *= 1.0 - dot(v, v) * 0.7;
         col *= u.frame.w;
         return float4(col, 1.0);
+    }
+
+    // The custom background alone, for ShaderValidator (no cover, ink or vignette).
+    fragment float4 custom_probe_fragment(VOut in [[stage_in]], constant Uniforms &u [[buffer(0)]]) {
+        return float4(customScene(in.uv, u, u.palette0), 1.0);
     }
 
     // Upscale the low-res scene to the drawable. Bilinear is already soft at 480 lines,

@@ -3,7 +3,10 @@
 Drop the needle and the TV comes alive. See the project brief for the full vision; this
 README covers how the code is laid out and how to work on it.
 
-**Status: Milestone 5 (Memory).** Every side is recorded (with pre-roll), split into
+**Status: Milestone 6 (Art director).** On a new album, Claude looks at the cover and sets
+the record's look: palette, background (paper folds, Googie, or its own shader), fold
+composition, motion and typography. Custom shaders are compiled and test-rendered in a
+sandbox before they're shown. One request per album, cached. Before that, **Milestone 5 (Memory)**: Every side is recorded (with pre-roll), split into
 tracks at gaps and track changes, encoded losslessly (ALAC or FLAC) with full tags and
 artwork, and filed under `~/Music/Needledrop/Artist/Album/`. Repeat plays keep only the
 best recording, and a SQLite library logs every play. Before that, **Milestone 4 (Voice)**: Time-synced lyrics from LRCLIB drift across the screen,
@@ -26,6 +29,7 @@ needledrop/
 │   │   ├── SignalAnalysis/  FFT, band energies, RMS/peak/clip, flatness, spectral flux, onsets, tempo + beat clock
 │   │   ├── Recognition/     ShazamKit + scripted recognizers, matching-window gate, playback clock
 │   │   ├── Metadata/        iTunes lookup/search, hi-res artwork, disk cache
+│   │   ├── ArtDirector/     Claude style specs (raw HTTP Messages API), validation, per-album cache, keychain key
 │   │   ├── Archive/         side recorder, track splitter, ALAC/FLAC encoder + tags, GRDB library
 │   │   ├── Lyrics/          LRC parser, LRCLIB provider with disk cache
 │   │   ├── Visuals/         Metal renderer (runtime-compiled MSL), palettes, audio drive, scene director
@@ -38,7 +42,7 @@ needledrop/
 └── docs/DECISIONS.md        design decisions and answers to the brief's open questions
 ```
 
-Later milestones add `ArtDirector` as further targets in the same
+Milestone 7 adds polish on top of these as further targets in the same
 package.
 
 ### Data flow

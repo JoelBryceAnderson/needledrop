@@ -7,43 +7,68 @@ enum LyricRasterizer {
     /// - Parameters:
     ///   - fontSize: pixels.
     ///   - maxWidth: pixels; text wraps, then shrinks, to stay inside.
-    static func image(for text: String, fontSize: CGFloat, maxWidth: CGFloat, maxLines: Int = 2) -> CGImage? {
+    static func image(for text: String, fontSize: CGFloat, maxWidth: CGFloat, maxLines: Int = 2,
+                      font: LookStyle.Font = .serif, weight: LookStyle.Weight = .bold) -> CGImage? {
         var size = fontSize
         for _ in 0..<6 {
-            if let image = render(text, fontSize: size, maxWidth: maxWidth, maxLines: maxLines) { return image }
+            if let image = render(text, fontSize: size, maxWidth: maxWidth, maxLines: maxLines, font: font, weight: weight) {
+                return image
+            }
             size *= 0.85
         }
-        return render(text, fontSize: size, maxWidth: maxWidth, maxLines: .max)
+        return render(text, fontSize: size, maxWidth: maxWidth, maxLines: .max, font: font, weight: weight)
     }
 
     /// The now-playing caption: the title in the lyric face, then a smaller regular line,
     /// left-aligned like a label printed in the corner.
-    static func caption(title: String, subtitle: String, fontSize: CGFloat, maxWidth: CGFloat) -> CGImage? {
+    static func caption(title: String, subtitle: String, font: LookStyle.Font = .serif,
+                        fontSize: CGFloat, maxWidth: CGFloat) -> CGImage? {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .left
         paragraph.lineHeightMultiple = 0.95
         let text = NSMutableAttributedString(string: title, attributes: [
-            .font: serif(fontSize, .bold), .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
+            .font: typeface(font, .bold, fontSize), .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
         ])
         if !subtitle.isEmpty {
             text.append(NSAttributedString(string: "\n" + subtitle, attributes: [
-                .font: serif(fontSize * 0.6, .regular), .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
+                .font: typeface(font, .regular, fontSize * 0.6), .foregroundColor: NSColor.white, .paragraphStyle: paragraph,
             ]))
         }
         return draw(text, fontSize: fontSize, maxWidth: maxWidth, maxLines: 3)
     }
 
-    private static func serif(_ size: CGFloat, _ weight: NSFont.Weight) -> NSFont {
-        let base = NSFont.systemFont(ofSize: size, weight: weight)
-        return base.fontDescriptor.withDesign(.serif).flatMap { NSFont(descriptor: $0, size: size) } ?? base
+    /// The art direction's typeface. All ship with macOS, so nothing needs licensing.
+    static func typeface(_ font: LookStyle.Font, _ weight: LookStyle.Weight, _ size: CGFloat) -> NSFont {
+        let w: NSFont.Weight = switch weight {
+        case .regular: .regular
+        case .bold: .bold
+        case .heavy: .heavy
+        }
+        func designed(_ design: NSFontDescriptor.SystemDesign) -> NSFont {
+            let base = NSFont.systemFont(ofSize: size, weight: w)
+            return base.fontDescriptor.withDesign(design).flatMap { NSFont(descriptor: $0, size: size) } ?? base
+        }
+        switch font {
+        case .serif: return designed(.serif)
+        case .sans: return NSFont.systemFont(ofSize: size, weight: w)
+        case .rounded: return designed(.rounded)
+        case .mono: return designed(.monospaced)
+        case .condensed:
+            return NSFont(name: weight == .regular ? "AvenirNextCondensed-Medium" : "AvenirNextCondensed-Heavy", size: size)
+                ?? NSFont.systemFont(ofSize: size, weight: w)
+        case .geometric:
+            return NSFont(name: weight == .regular ? "Futura-Medium" : "Futura-Bold", size: size)
+                ?? designed(.rounded)
+        }
     }
 
-    private static func render(_ text: String, fontSize: CGFloat, maxWidth: CGFloat, maxLines: Int) -> CGImage? {
+    private static func render(_ text: String, fontSize: CGFloat, maxWidth: CGFloat, maxLines: Int,
+                               font: LookStyle.Font, weight: LookStyle.Weight) -> CGImage? {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineHeightMultiple = 0.92
         let attributed = NSAttributedString(string: text, attributes: [
-            .font: serif(fontSize, .bold),
+            .font: typeface(font, weight, fontSize),
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
         ])

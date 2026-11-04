@@ -4,13 +4,6 @@ import simd
 import QuartzCore
 import SignalAnalysis
 
-public enum BackgroundStyle: String, Codable, CaseIterable, Sendable {
-    /// Folded paper: big flat planes in the album's colours.
-    case paper
-    /// The original palette-bleed flow.
-    case smoke
-}
-
 /// The lyric line to show this frame (already timed against what the room hears).
 public struct LyricFrame: Sendable, Equatable {
     /// Changes when the line changes.
@@ -82,7 +75,9 @@ public enum VisualsError: Error, CustomStringConvertible {
 public final class VisualsRenderer: NSObject, MTKViewDelegate {
     public let device: any MTLDevice
     public var internalHeight = 480
-    public var background: BackgroundStyle = .paper
+    /// Forces a background for every album (the Theme setting); nil follows each album's
+    /// art direction.
+    public var themeOverride: LookStyle.Background?
     /// Show the album cover (living cover) over the background.
     public var showCover = true
     /// Called once per frame for audio and session state.
@@ -172,6 +167,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// Puts a look on screen, crossfading from the current one. Re-showing the same id
     /// (e.g. the subject mask finished later) swaps textures without a transition.
     public func show(_ look: AlbumLook, at time: Double = CACurrentMediaTime()) {
+        var look = look
+        look.style = look.style.clamped()
+        if let body = look.style.customShaderBody { prepareCustomPipeline(body) }
         let slot = Slot(look: look, art: texture(look.artwork), mask: texture(look.subjectMask))
         if slots.first?.look.id == look.id {
             slots[0] = slot
@@ -184,6 +182,35 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     }
 
     public var currentLookID: String? { slots.first?.look.id }
+    public var currentStyle: LookStyle { slots.first?.look.style ?? LookStyle() }
+
+    // MARK: - Custom (Claude-written) scene shaders
+
+    private var customPipelines: [String: any MTLRenderPipelineState] = [:]
+    private var compiling: Set<String> = []
+
+    /// Compiles off the main thread; the album shows on paper until it's ready.
+    private func prepareCustomPipeline(_ body: String) {
+        guard customPipelines[body] == nil, !compiling.contains(body) else { return }
+        compiling.insert(body)
+        let device = self.device
+        Task { [weak self] in
+            let result = await ShaderValidator.compile(Shaders.source(customBody: body), device: device, format: .rgba16Float)
+            guard let self else { return }
+            self.compiling.remove(body)
+            if case .success(let pipeline) = result { self.customPipelines[body] = pipeline }
+        }
+    }
+
+    /// The background this frame, and the pipeline that draws it.
+    private func scenePipelineAndBackground(_ style: LookStyle) -> (any MTLRenderPipelineState, LookStyle.Background) {
+        let wanted = themeOverride ?? style.background
+        if wanted == .custom {
+            if let body = style.customShaderBody, let pipeline = customPipelines[body] { return (pipeline, .custom) }
+            return (scenePipeline, .paper)  // still compiling (or failed): paper meanwhile
+        }
+        return (scenePipeline, wanted)
+    }
 
     // MARK: - MTKViewDelegate
 
@@ -203,8 +230,11 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     public func render(to target: any MTLTexture, input: VisualInput, time: Double, commandBuffer: any MTLCommandBuffer) {
         let dt = min(0.1, max(0, time - (lastTime ?? time)))
         lastTime = time
-        let audio = drive.update(features: input.features, beatAge: input.beatAge, dt: dt)
-        flow += dt * (0.04 + 0.10 * Double(audio.level))
+        let style = slots.first?.look.style ?? LookStyle()
+        var audio = drive.update(features: input.features, beatAge: input.beatAge, dt: dt)
+        audio.bass = min(1, audio.bass * Float(style.bassResponse))
+        audio.beat = min(1, audio.beat * Float(style.beatResponse))
+        flow += dt * (0.04 + 0.10 * Double(audio.level)) * style.speed
         let frame = director.update(at: time, active: input.active)
         if frame.previousReleased, slots.count > 1 { slots.removeLast() }
 
@@ -225,7 +255,14 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         uniforms.frame = SIMD4(Float(width), Float(height), Float(flow), frame.brightness)
         uniforms.audio = SIMD4(audio.bass, audio.mids, audio.highs, audio.level)
         uniforms.rhythm = SIMD4(audio.beat, 0, slots.count > 1 ? frame.mix : 1, showCover ? 1 : 0)
-        uniforms.style = SIMD4(background == .paper ? 0 : 1, Float(coverX), Float(coverSize), 0)
+        let (pipeline, background) = scenePipelineAndBackground(style)
+        let backgroundIndex: Float = switch background {
+        case .paper: 0
+        case .smoke: 1
+        case .googie: 2
+        case .custom: 3
+        }
+        uniforms.style = SIMD4(backgroundIndex, Float(coverX), Float(coverSize), 0)
         setInk(&uniforms, time: time, layout: layout)
         let previous = slots.count > 1 ? slots[1] : nil
         uniforms.slots = SIMD4(current?.art == nil ? 0 : 1, previous?.art == nil ? 0 : 1,
@@ -237,7 +274,7 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         scenePass.colorAttachments[0].loadAction = .dontCare
         scenePass.colorAttachments[0].storeAction = .store
         if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: scenePass) {
-            encoder.setRenderPipelineState(scenePipeline)
+            encoder.setRenderPipelineState(pipeline)
             encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SceneUniforms>.stride, index: 0)
             encoder.setFragmentTexture(current?.art ?? placeholder, index: 0)
             encoder.setFragmentTexture(current?.mask ?? placeholder, index: 1)
@@ -284,7 +321,9 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
         let id = slots.first?.look.id ?? "neutral"
         var seed: UInt64 = 0xCBF2_9CE4_8422_2325
         for byte in id.utf8 { seed = (seed ^ UInt64(byte)) &* 0x100_0000_01B3 }
-        return FoldLayout.make(seed: seed, aspect: aspect, flow: flow, bass: bass)
+        let style = currentStyle
+        return FoldLayout.make(seed: seed, aspect: aspect, flow: flow, bass: bass,
+                               angle: style.foldAngle, count: style.foldCount, turbulence: style.turbulence)
     }
 
     /// The cover's square, padded, and the caption's box while it's up: lyrics stay clear.
@@ -308,7 +347,8 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             let fontSize = CGFloat(sceneHeight) * 0.06 * 2
             // Keep to the space left of the cover (when there is one).
             let room = hasArt && !input.lyricsAvailable ? max(0.3, layout.aspect * coverX - coverSize / 2 - 0.1) : 0.9
-            if let image = LyricRasterizer.caption(title: caption.title, subtitle: caption.subtitle,
+            if let image = LyricRasterizer.caption(title: currentStyle.apply(case: caption.title), subtitle: caption.subtitle,
+                                                   font: currentStyle.font,
                                                    fontSize: fontSize, maxWidth: CGFloat(Double(sceneHeight) * room * 2)),
                let tex = texture(image) {
                 captionSlot = PrintedSlot(id: 0, captionID: caption.id, texture: tex,
@@ -379,13 +419,14 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
             uniforms.ink2a = SIMD4(Float(f.centre.x), Float(f.centre.y), Float(f.size.x / 2), Float(f.size.y / 2))
             uniforms.ink2b = SIMD4(0, Float(o), blur(o, exiting: time > caption.enteredAt + Self.inkIn), 0)
         }
-        for (i, c) in layout.creases.prefix(3).enumerated() {
+        for (i, c) in layout.creases.prefix(FoldLayout.maximumCreases).enumerated() {
             let n = c.normal
             let crease = SIMD4(Float(n.x), Float(n.y), Float(simd_dot(c.point, n)), 1)
             switch i {
             case 0: uniforms.crease.0 = crease
             case 1: uniforms.crease.1 = crease
-            default: uniforms.crease.2 = crease
+            case 2: uniforms.crease.2 = crease
+            default: uniforms.crease.3 = crease
             }
         }
         uniforms.fold = SIMD4(Float(layout.tilt), 1, 0, 0)  // strip 1 gets the accent colour
@@ -395,11 +436,13 @@ public final class VisualsRenderer: NSObject, MTKViewDelegate {
     /// Rasterised at twice the internal resolution, mipmapped (the shader blurs with mips).
     private func lyricTexture(_ text: String, size: (width: Double, font: Double, lines: Int), sceneHeight: Int)
         -> (texture: any MTLTexture, size: SIMD2<Double>)? {
-        let key = "\(size.width)|\(text)"
+        let style = currentStyle
+        let key = "\(size.width)|\(style.font)|\(style.weight)|\(style.letterCase)|\(text)"
         if let cached = textCache[key] { return cached }
         let scale = 2 * Double(sceneHeight)
-        guard let image = LyricRasterizer.image(for: text, fontSize: CGFloat(size.font * scale),
-                                                maxWidth: CGFloat(size.width * scale), maxLines: size.lines),
+        guard let image = LyricRasterizer.image(for: style.apply(case: text), fontSize: CGFloat(size.font * scale),
+                                                maxWidth: CGFloat(size.width * scale), maxLines: size.lines,
+                                                font: style.font, weight: style.weight),
               let texture = texture(image) else { return nil }
         if textCache.count >= 16 { textCache.removeAll() }
         let entry = (texture: texture, size: SIMD2(Double(image.width), Double(image.height)) / scale)
@@ -440,7 +483,7 @@ struct SceneUniforms {
     var ink1b = SIMD4<Float>()
     var ink2a = SIMD4<Float>()
     var ink2b = SIMD4<Float>()
-    var crease: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero)
+    var crease: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) = (.zero, .zero, .zero, .zero)
     var fold = SIMD4<Float>()
     var light = SIMD4<Float>(0, 0, 1, 0)
     var palette0 = SceneUniforms.emptyPalette
