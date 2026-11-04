@@ -75,10 +75,9 @@ public actor LyricsProvider {
             .init(name: "track_name", value: track.title),
         ]
         let records = try JSONDecoder().decode([Record].self, from: try await http.get(search.url!, headers: userAgent))
-        let artist = track.artist.lowercased()
         let candidates = records.filter { record in
             // Same artist (either way round, for "feat." credits), and close in length.
-            if let got = record.artistName?.lowercased(), !got.isEmpty, !got.contains(artist), !artist.contains(got) { return false }
+            if let got = record.artistName, !got.isEmpty, MetadataResolver.artistMatch(track.artist, got) == 0 { return false }
             guard let wanted = track.duration, let got = record.duration else { return true }
             return abs(wanted - got) <= 5
         }

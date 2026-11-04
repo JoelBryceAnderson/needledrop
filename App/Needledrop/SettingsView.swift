@@ -263,6 +263,8 @@ struct SettingsView: View {
                 Text("Auto (art director chooses)").tag(AppTheme.auto)
                 Text("Paper").tag(AppTheme.paper)
                 Text("Googie").tag(AppTheme.googie)
+                Text("Cut-paper collage").tag(AppTheme.collage)
+                Text("Risograph").tag(AppTheme.risograph)
                 Text("Smoke").tag(AppTheme.smoke)
             }
             Picker("Motion", selection: $model.settings.motion) {

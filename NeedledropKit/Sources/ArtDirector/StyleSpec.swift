@@ -82,7 +82,7 @@ public struct StyleSpec: Codable, Sendable, Equatable {
         if palette.count < 3 || palette.count > 8 { problems.append(.palette("palette needs 3–8 colours, got \(palette.count)")) }
         for hex in palette where Self.rgb(hex) == nil { problems.append(.palette("“\(hex)” isn't a #RRGGBB colour")) }
         if LookStyle.Background(rawValue: background) == nil || background == "smoke" {
-            problems.append(.value("background must be paper, googie or custom"))
+            problems.append(.value("background must be paper, googie, collage, risograph or custom"))
         }
         if LookStyle.Font(rawValue: typography.font) == nil { problems.append(.value("unknown font “\(typography.font)”")) }
         if LookStyle.Weight(rawValue: typography.weight) == nil { problems.append(.value("unknown weight “\(typography.weight)”")) }
@@ -143,7 +143,7 @@ public struct StyleSpec: Codable, Sendable, Equatable {
         return object([
             "mood": ["type": "string"],
             "palette": ["type": "array", "items": ["type": "string"]],
-            "background": choice(["paper", "googie", "custom"]),
+            "background": choice(["paper", "googie", "collage", "risograph", "custom"]),
             "mode_weights": object([
                 "living_cover": number, "palette_bleed": number, "dissolve": number,
                 "virtual_record": number, "googie": number,

@@ -6,7 +6,7 @@ import Visuals
 
 /// The Theme setting: let the art director choose per album, or force one look.
 enum AppTheme: String, Codable, CaseIterable {
-    case auto, paper, smoke, googie
+    case auto, paper, smoke, googie, collage, risograph
 }
 
 /// Settings that force a choice the art director would otherwise make per album.

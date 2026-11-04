@@ -1,5 +1,10 @@
 # Milestone 10 plan: a bigger procedural toolkit for Claude
 
+> **Status:** sections 1, 2 (the first 8 effects), 3 (collage, risograph) and the library-driven
+> schema from section 4 are built. Every theme now places lyrics by reading a probe render of
+> the background. Still to do: the rest of the effect library, the legibility render check per
+> line start, per-section style changes, and GIF/MP4 preview export.
+
 Goal: give Claude many more effects and styles to choose from, and let it place effects at exact
 moments in a song. The engine keeps its guarantees: lyrics stay legible, nothing crops, and the
 picture holds still while a line is up unless an effect is meant to land on that line.

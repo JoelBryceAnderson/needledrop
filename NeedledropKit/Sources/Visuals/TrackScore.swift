@@ -126,17 +126,57 @@ public struct TrackScore: Sendable, Equatable, Codable {
         }
     }
 
+    /// An effect at an exact moment: anchored to a line's start, plus a number of beats
+    /// (negative lands before the line, in the gap).
+    public struct EffectCue: Sendable, Equatable, Codable {
+        public var kind: Effect.Kind
+        public var atLine: Int
+        public var atLineText: String
+        public var offsetBeats: Double
+        public var durationBeats: Double
+        public var intensity: Double
+
+        public init(kind: Effect.Kind, atLine: Int, atLineText: String = "", offsetBeats: Double = 0,
+                    durationBeats: Double? = nil, intensity: Double = 0.8) {
+            self.kind = kind
+            self.atLine = atLine
+            self.atLineText = atLineText
+            self.offsetBeats = offsetBeats
+            self.durationBeats = durationBeats ?? kind.info.defaultBeats
+            self.intensity = intensity
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case kind = "effect", atLine = "at_line", atLineText = "at_line_text", offsetBeats = "offset_beats"
+            case durationBeats = "duration_beats", intensity
+        }
+    }
+
     public var sections: [Section]
     public var keyframes: [Keyframe]
     public var lines: [LineTreatment]
+    public var effects: [EffectCue]
     /// A sentence on the idea (shown in the debug overlay).
     public var notes: String
 
-    public init(sections: [Section] = [], keyframes: [Keyframe] = [], lines: [LineTreatment] = [], notes: String = "") {
+    public init(sections: [Section] = [], keyframes: [Keyframe] = [], lines: [LineTreatment] = [],
+                effects: [EffectCue] = [], notes: String = "") {
         self.sections = sections
         self.keyframes = keyframes
         self.lines = lines
+        self.effects = effects
         self.notes = notes
+    }
+
+    enum CodingKeys: String, CodingKey { case sections, keyframes, lines, effects, notes }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sections = try c.decodeIfPresent([Section].self, forKey: .sections) ?? []
+        keyframes = try c.decodeIfPresent([Keyframe].self, forKey: .keyframes) ?? []
+        lines = try c.decodeIfPresent([LineTreatment].self, forKey: .lines) ?? []
+        effects = try c.decodeIfPresent([EffectCue].self, forKey: .effects) ?? []
+        notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
     }
 
     // MARK: - Lookups
@@ -193,6 +233,16 @@ public struct TrackScore: Sendable, Equatable, Codable {
             t.line = line
             return t
         }.sorted { $0.line < $1.line }
+        s.effects = effects.compactMap { e in
+            guard let line = resolve(e.atLine, e.atLineText) else { return nil }
+            var e = e
+            e.atLine = line
+            let range = e.kind.info.beats
+            e.durationBeats = e.durationBeats.isFinite ? min(range.upperBound, max(range.lowerBound, e.durationBeats)) : e.kind.info.defaultBeats
+            e.offsetBeats = e.offsetBeats.isFinite ? min(32, max(-16, e.offsetBeats)) : 0
+            e.intensity = e.intensity.isFinite ? min(1, max(0, e.intensity)) : 0.6
+            return e
+        }.sorted { ($0.atLine, $0.offsetBeats) < ($1.atLine, $1.offsetBeats) }
         s.notes = String(notes.prefix(200))
         return s
     }

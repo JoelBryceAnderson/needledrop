@@ -12,6 +12,10 @@ public struct LookStyle: Sendable, Equatable, Codable {
         case googie
         /// A Claude-written fragment shader (see `customShaderBody`).
         case custom
+        /// Cut-paper collage: big torn shapes in the album's colours, layered with shadows.
+        case collage
+        /// Risograph: two inks printed slightly out of register on cream paper.
+        case risograph
     }
 
     public enum Font: String, Sendable, Codable, CaseIterable {

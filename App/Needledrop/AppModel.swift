@@ -126,6 +126,7 @@ final class AppModel {
            let clock = session.clock, session.identifiedByHand || clock.confidence(at: features.time) > 0.15 {
             input.lyricsAvailable = true
             let position = clock.position(at: features.time)
+            input.trackPosition = position  // the score's timed effects run on it
             // The picture moves between lines: tell it how long until the next one.
             input.nextLyricIn = lyrics.nextLineStart(after: position).map { ($0 - position) / clock.rate }
             input.nextLyricIndex = lyrics.nextLineIndex(after: position)
@@ -334,6 +335,7 @@ final class AppModel {
             score = nil
             scoringTrack = nil
             renderer?.score = nil
+            renderer?.scoreTimeline = nil
             if let track {
                 append("♫ \(track.artist) — \(track.title)")
             } else if engine.session().unidentified {
@@ -345,6 +347,9 @@ final class AppModel {
             metadata = info
             artwork = data.flatMap(NSImage.init(data:))
             artworkData = data
+            if info.collectionID == nil {
+                append("Couldn't find “\(info.title)” by \(info.artist) in the catalogue — no cover or album look")
+            }
             updateLook(for: info)
             requestScore()
         case .lyrics(let lyrics):
@@ -457,8 +462,9 @@ final class AppModel {
                 let result = try await director.score(for: brief)
                 guard let self, self.scoringTrack == track else { return }
                 self.score = result.score
+                self.renderer?.scoreTimeline = brief.timeline
                 self.renderer?.score = result.score
-                let detail = "\(result.score.sections.count) sections, \(result.score.keyframes.count) keyframes"
+                let detail = "\(result.score.sections.count) sections, \(result.score.keyframes.count) keyframes, \(result.score.effects.count) effects"
                 self.scoreStatus = "“\(info.title)”: \(result.score.notes.isEmpty ? detail : result.score.notes) (\(detail)\(result.fromCache ? ", saved" : ""))"
                 if !result.fromCache {
                     self.append("Scored “\(info.title)”: \(detail)" + (result.dropped.isEmpty ? "" : ", \(result.dropped.count) moves dropped"))
@@ -509,7 +515,7 @@ final class AppModel {
 
     private static func directorTheme(_ theme: AppTheme) -> Theme {
         switch theme {
-        case .auto, .smoke: .auto
+        case .auto, .smoke, .collage, .risograph: .auto
         case .paper: .paper
         case .googie: .googie
         }
@@ -541,7 +547,8 @@ final class AppModel {
         }
         // Without a reported position, assume it started when the app announced it.
         let position = (pending.position ?? 0) + elapsed
-        if await engine.identify(title: pending.track.title, artist: pending.track.artist, position: position) {
+        if await engine.identify(title: pending.track.title, artist: pending.track.artist, album: pending.track.album,
+                                 duration: pending.track.duration, position: position) {
             pendingPlayerTrack = nil
             append("♫ from \(pending.track.source.rawValue): \(pending.track.artist) — \(pending.track.title)")
         }
@@ -590,6 +597,8 @@ final class AppModel {
         case .paper: .paper
         case .smoke: .smoke
         case .googie: .googie
+        case .collage: .collage
+        case .risograph: .risograph
         }
         renderer?.showCover = settings.showCover
         renderer?.motion = settings.motion.amount

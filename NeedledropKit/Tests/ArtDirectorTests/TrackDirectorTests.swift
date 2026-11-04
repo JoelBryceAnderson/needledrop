@@ -187,3 +187,17 @@ private func scoreJSON(keyframeBefore: Int = 3, transition: String = "refold", b
         #expect(transport.requests.withLock { $0.count } == 2)
     }
 }
+
+@Suite struct EffectPromptTests {
+    @Test func thePromptAndSchemaComeFromTheEffectLibrary() throws {
+        for kind in Effect.Kind.allCases {
+            #expect(TrackDirector.system.contains("- \(kind.rawValue): \(kind.info.summary)"))
+        }
+        let properties = try #require(TrackDirector.schema["properties"] as? [String: Any])
+        let effects = try #require(properties["effects"] as? [String: Any])
+        let item = try #require(effects["items"] as? [String: Any])
+        let fields = try #require(item["properties"] as? [String: Any])
+        let kind = try #require(fields["effect"] as? [String: Any])
+        #expect(kind["enum"] as? [String] == Effect.Kind.allCases.map(\.rawValue))
+    }
+}
