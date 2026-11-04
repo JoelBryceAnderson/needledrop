@@ -302,6 +302,37 @@ Paper keeps its creases. The background holds still while a line is up, so a cal
 
 **Lyrics on busy grounds get a soft halo** in the opposite tone, as a backstop.
 
+## Lights (Philips Hue)
+
+**Talk to the bridge directly, no SDK.** Discovery uses Signify's cloud endpoint and Bonjour
+(`_hue._tcp`) together. Pairing is the link button (`POST /api` with `generateclientkey`), and the
+app and client keys go in the keychain, one item per bridge. REST calls trust the bridge's
+self-signed certificate only when its common name is the paired bridge's id.
+
+**What the light shows.** The sheet colour (palette sorted dark to light, index 3, as in the shader)
+at the user's brightness, scaled a little by how light the colour is. When the music lifts (a short
+loudness average well above the long one), the colour drifts toward the accent (index 4). Album
+changes crossfade over 3 s in linear light.
+
+**Pulses stay gentle.** A soft rise (70 ms) and a 300 ms fall after each beat, read through
+`features(delayedBy: outputLatency)` like the visuals. There are at most 2.5 pulses a second (fast
+tempos pulse every other beat), a pulse dims the light by no more than 35 %, and brightness never
+changes faster than 6 per second. Motion › Still turns pulses off and Gentle halves them.
+
+**Outputs.** An entertainment area streams over DTLS 1.2 (UDP 2100, PSK = client key, identity =
+app key, `TLS_PSK_WITH_AES_128_GCM_SHA256`), resending the latest state at 50 Hz. If streaming
+can't start (another app is streaming, or the pairing has no client key), the area's lights get
+REST updates instead. REST stays within the bridge's limits: 10 light commands a second in all, with
+lights sharing that in turn, and 1 a second for a room or zone. Rooms and zones only change colour.
+Unchanged states aren't resent, and each command fades over the gap until the next.
+
+**HomeKit: a follow-up, not built.** `HMHomeManager` would cover non-Hue lights for colour
+following (it's too slow for pulses). It needs the HomeKit entitlement, which needs a provisioning
+profile from a development team. The app builds with ad-hoc signing and an empty
+`DEVELOPMENT_TEAM`, so the entitlement would stop `make app` and CI from building. Do it once
+there's a team. It would be another `LightOutput` (colour only, about 1 update a second) beside
+the REST one.
+
 ## Recommendations for the open questions
 
 **SwiftData vs GRDB → GRDB.** The library is relational (album ← tracks ← recordings ← plays),

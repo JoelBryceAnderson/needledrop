@@ -26,6 +26,12 @@
 	<string>Needledrop reads where you are in the song playing in Music, to time the lyrics.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Needledrop can listen to what this Mac is playing (a browser, a music app) to drive the visuals when the turntable isn't in use.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_hue._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Needledrop finds and controls your Philips Hue Bridge so your lights can follow the album colours and the beat.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Needledrop listens to your turntable to recognise records, drive the visuals and archive what you play.</string>
 </dict>

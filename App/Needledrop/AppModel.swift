@@ -75,6 +75,8 @@ final class AppModel {
     private(set) var log: [LogEntry] = []
     private(set) var microphoneDenied = false
     let presentation = PresentationController()
+    /// Hue lights following the album colours and the beat.
+    let lights = LightsController()
 
     private var eventTask: Task<Void, Never>?
     private let metadataResolver = MetadataResolver(cacheDirectory: MetadataResolver.defaultCacheDirectory)
@@ -171,6 +173,7 @@ final class AppModel {
             showSetup()
         }
         presentVisuals()
+        lights.start(model: self)
         presentation.onDisplaysChanged = { [weak self] in self?.presentVisuals() }
         presentation.onToggleFullScreen = { [weak self] in self?.toggleFullScreen() }
         presentation.onFullScreenEnded = { [weak self] in self?.settings.fullScreen = false }
