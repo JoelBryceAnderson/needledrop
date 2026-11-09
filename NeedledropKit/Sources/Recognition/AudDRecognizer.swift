@@ -1,6 +1,9 @@
 import Foundation
+import os
 import Secrets
 import Synchronization
+
+private let auddLog = Logger(subsystem: "com.needledrop.Needledrop", category: "audd")
 
 /// Sends HTTP requests (URLSession in the app, a fake in tests).
 public protocol AudDTransport: Sendable {
@@ -58,6 +61,7 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
         sent = false
         window += 1
         shared.openWindow.withLock { $0 = window }
+        auddLog.notice("Window \(self.window) opened at \(sampleRate) Hz")
     }
 
     public func feed(_ mono: UnsafePointer<Float>, frameCount: Int, endTime: Double) {
@@ -65,7 +69,10 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
         samples.append(contentsOf: UnsafeBufferPointer(start: mono, count: frameCount))
         guard Double(samples.count) >= sampleRate * Self.clipSeconds else { return }
         sent = true
+        let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+        auddLog.notice("Window \(self.window): sending \(Self.clipSeconds) s clip, peak \(String(format: "%.1f", peak > 0 ? 20 * log10(peak) : -120), privacy: .public) dB")
         let wav = Self.wav(Self.resample(samples, from: sampleRate, to: Self.uploadRate), sampleRate: Self.uploadRate)
+        Self.saveDebugClip(wav, window: window)
         let request = Self.request(token: token, wav: wav)
         let mine = window, sentAt = ContinuousClock.now
         let transport = self.transport, handler = self.handler
@@ -74,8 +81,13 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
             do {
                 let data = try await transport.post(request)
                 // A window that has closed (the session moved on) doesn't want it any more.
-                guard shared.openWindow.withLock({ $0 == mine }) else { return }
-                switch try Self.parse(data) {
+                let reply = try Self.parse(data)
+                auddLog.notice("Window \(mine): reply after \(ContinuousClock.now - sentAt, privacy: .public): \(Self.summary(reply, data), privacy: .public)")
+                guard shared.openWindow.withLock({ $0 == mine }) else {
+                    auddLog.notice("Window \(mine) closed before the reply; ignoring it")
+                    return
+                }
+                switch reply {
                 case .match(var match, let clipStart):
                     let elapsed = ContinuousClock.now - sentAt
                     let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
@@ -87,6 +99,7 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
                     if !shared.reportedError.withLock({ let was = $0; $0 = true; return was }) { handler?(.error(message)) }
                 }
             } catch {
+                auddLog.error("Window \(mine): request failed: \(error.localizedDescription, privacy: .public)")
                 if !shared.reportedError.withLock({ let was = $0; $0 = true; return was }) {
                     handler?(.error("AudD: \(error.localizedDescription)"))
                 }
@@ -167,6 +180,26 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
             URL(string: $0.replacingOccurrences(of: "{w}", with: "1200").replacingOccurrences(of: "{h}", with: "1200"))
         }
         return .match(match, clipStart: timecode(result.timecode ?? "") ?? 0)
+    }
+
+    /// Debug builds keep the last few clips sent, to listen to what AudD heard:
+    /// ~/Library/Application Support/Needledrop/Debug/audd-clip-N.wav.
+    static func saveDebugClip(_ wav: Data, window: Int) {
+        #if DEBUG
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let dir = support.appendingPathComponent("Needledrop/Debug", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? wav.write(to: dir.appendingPathComponent("audd-clip-\(window % 5).wav"))
+        #endif
+    }
+
+    /// For the log: what came back, never the request (it carries the token).
+    static func summary(_ reply: Reply, _ data: Data) -> String {
+        switch reply {
+        case .match(let match, let clipStart): "match \(match.artist) — \(match.title) at \(clipStart) s"
+        case .noMatch: "no match (\(String(decoding: data.prefix(200), as: UTF8.self)))"
+        case .failure(let message): message
+        }
     }
 
     /// "1:23" or "01:02:03" → seconds.
