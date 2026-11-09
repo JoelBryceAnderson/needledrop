@@ -28,6 +28,12 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
     private var halListener: AudioObjectPropertyListenerBlock?
     private var deviceListener: AudioObjectPropertyListenerBlock?
     private var isStarted = false
+    /// What the device was when capture started, to tell a real change from a notification
+    /// that changes nothing (USB interfaces send those as IO starts).
+    private var startedRate = 0.0
+    private var startedChannels = 0
+    /// A restart waiting for a burst of device notifications to settle (or a retry).
+    private var pendingRestart: DispatchWorkItem?
 
     // Preallocated deinterleave buffers for the IO block (never allocate there).
     private let maxFrames = 16_384
@@ -72,10 +78,13 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         let device = preferredDeviceUID.map(AudioDeviceCatalog.device(uid:)) ?? AudioDeviceCatalog.defaultInputDevice()
         guard let device else {
             status(.waitingForDevice(preferredDeviceUID.map { "device \($0)" } ?? "a default input device"))
-            return
+            return  // the device-list listener restarts it when one appears
         }
         guard device.inputChannelCount > 0, device.nominalSampleRate > 0 else {
+            // Mid-reconfiguration a USB device can briefly report no channels: try again
+            // shortly rather than waiting for a notification that may never come.
             status(.waitingForDevice("\(device.name) (no input channels)"))
+            scheduleRestart(after: 1)
             return
         }
 
@@ -118,10 +127,14 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         }
         procID = newProc
         currentDeviceID = device.id
+        startedRate = device.nominalSampleRate
+        startedChannels = device.inputChannelCount
         watchDevice(device.id)
     }
 
     private func teardown() {
+        pendingRestart?.cancel()
+        pendingRestart = nil
         if let currentDeviceID {
             unwatchDevice(currentDeviceID)
             if let procID {
@@ -162,7 +175,7 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
     private func watchDevice(_ id: AudioDeviceID) {
         let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             guard let self, self.isStarted else { return }
-            self.rebuild()
+            self.deviceChanged()
         }
         for selector in Self.deviceSelectors {
             var address = AudioDeviceCatalog.address(selector,
@@ -182,6 +195,26 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
             AudioObjectRemovePropertyListenerBlock(id, &address, control, deviceListener)
         }
         self.deviceListener = nil
+    }
+
+    /// The device sent a notification: restart only if it really changed (gone, or a different
+    /// sample rate or channel count), once the burst of notifications has settled.
+    private func deviceChanged() {
+        guard let id = currentDeviceID else { return }
+        let alive = AudioDeviceCatalog.isAlive(id)
+        let now = AudioDeviceCatalog.device(uid: AudioDeviceCatalog.uid(of: id) ?? "")
+        if alive, let now, now.nominalSampleRate == startedRate, now.inputChannelCount == startedChannels { return }
+        scheduleRestart(after: 0.4)
+    }
+
+    private func scheduleRestart(after delay: Double) {
+        pendingRestart?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isStarted else { return }
+            self.rebuild()
+        }
+        pendingRestart = work
+        control.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// Runs on `control` (the queue the listener was registered with).

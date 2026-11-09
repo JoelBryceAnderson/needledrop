@@ -6,6 +6,7 @@ import Foundation
 import Lyrics
 import Metadata
 import Observation
+import os
 import Pipeline
 import Recognition
 import ReplayHarness
@@ -640,11 +641,39 @@ final class AppModel {
         let snapshot = pipeline.snapshot()
         var running = false
         if case .running = snapshot.sourceStatus { running = true }
-        if stall.update(now: ProcessInfo.processInfo.systemUptime, audioTime: snapshot.features.time, running: running) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if stall.update(now: now, audioTime: snapshot.features.time, running: running) {
             append("No audio arriving from \(snapshot.sourceName ?? "the input"): restarting it")
             Task { await restartInput() }
+            return
+        }
+        // Perfect digital silence from an interface or microphone: real hardware always has a
+        // little noise, so this is macOS handing over silence (an input opened while the
+        // microphone permission was still being settled). Reopen it; say so if it persists.
+        var hardware = false
+        switch settings.input {
+        case .device, .systemDefault: hardware = true
+        default: break
+        }
+        guard hardware, running, snapshot.peakHoldDB <= -119 else {
+            digitalSilenceSince = nil
+            return
+        }
+        let since = digitalSilenceSince ?? now
+        digitalSilenceSince = since
+        guard now - since >= 4 else { return }
+        digitalSilenceSince = nil
+        silenceRestarts += 1
+        if silenceRestarts == 1 {
+            append("Only digital silence from \(snapshot.sourceName ?? "the input"): reopening it")
+            Task { await restartInput() }
+        } else if silenceRestarts == 2 || silenceRestarts % 10 == 0 {
+            append("Still only silence from \(snapshot.sourceName ?? "the input"). Check System Settings › Privacy & Security › Microphone, then quit and reopen Needledrop")
         }
     }
+
+    private var digitalSilenceSince: Double?
+    private var silenceRestarts = 0
 
     private func keepDisplayAwake(_ awake: Bool) {
         if awake, displayAwake == nil {
@@ -672,9 +701,13 @@ final class AppModel {
         settings.showCover.toggle()
     }
 
+    private static let systemLog = Logger(subsystem: "com.needledrop.Needledrop", category: "app")
+
     private func append(_ text: String) {
         // Recognition errors repeat every matching window; one line is enough.
         guard log.last?.text != text else { return }
+        // Also to the system log: `log show --last 10m --predicate 'subsystem == "com.needledrop.Needledrop"'`.
+        Self.systemLog.notice("\(text, privacy: .public)")
         log.append(LogEntry(text: text))
         if log.count > 100 { log.removeFirst(log.count - 100) }
     }
