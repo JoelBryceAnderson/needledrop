@@ -212,7 +212,9 @@ final class AppModel {
         var catalog: (any TrackCatalog)?
         switch settings.input {
         case .systemDefault, .device:
+            let before = MicrophoneAccess.statusDescription
             microphoneDenied = !(await MicrophoneAccess.request())
+            Self.systemLog.notice("Microphone access: \(before, privacy: .public) → \(MicrophoneAccess.statusDescription, privacy: .public)")
             if microphoneDenied { append("Microphone access denied — enable Needledrop in System Settings › Privacy & Security › Microphone") }
             if case .device(let uid, _) = settings.input {
                 source = LiveInputSource(deviceUID: uid)
@@ -671,6 +673,13 @@ final class AppModel {
     }
 
     private func checkForStall() {
+        // An input started without access stays silent after access is granted: restart it.
+        if microphoneDenied, MicrophoneAccess.isGranted {
+            microphoneDenied = false
+            append("Microphone access granted: restarting input")
+            Task { await restartInput() }
+            return
+        }
         let snapshot = pipeline.snapshot()
         var running = false
         if case .running = snapshot.sourceStatus { running = true }

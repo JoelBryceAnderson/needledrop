@@ -2,6 +2,10 @@ import AVFAudio
 import AudioToolbox
 import CoreAudio
 import Foundation
+import os
+import Synchronization
+
+private let captureLog = Logger(subsystem: "com.needledrop.Needledrop", category: "capture")
 
 /// Captures from a hardware input (a USB interface, a microphone) into the ring buffer.
 ///
@@ -42,6 +46,42 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
     private let maxFrames = 16_384
     private let left: UnsafeMutablePointer<Float>
     private let right: UnsafeMutablePointer<Float>
+
+    // Diagnostics: what arrived since the last report (written on the audio thread).
+    private let meterBuffers = Atomic<Int>(0)
+    private let meterFrames = Atomic<Int>(0)
+    private let meterPeakBits = Atomic<UInt32>(0)
+    private var meterTimer: DispatchSourceTimer?
+
+    private func meter(_ samples: UnsafePointer<Float>, count: Int) {
+        var peak: Float = 0
+        for i in 0..<count { peak = max(peak, abs(samples[i])) }
+        meterBuffers.add(1, ordering: .relaxed)
+        meterFrames.add(count, ordering: .relaxed)
+        let bits = peak.bitPattern  // non-negative floats order the same as their bits
+        var current = meterPeakBits.load(ordering: .relaxed)
+        while bits > current {
+            let (exchanged, original) = meterPeakBits.compareExchange(expected: current, desired: bits, ordering: .relaxed)
+            if exchanged { break }
+            current = original
+        }
+    }
+
+    private func startMeterReports(path: String, device: String) {
+        meterTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: control)
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            let buffers = self.meterBuffers.exchange(0, ordering: .relaxed)
+            let frames = self.meterFrames.exchange(0, ordering: .relaxed)
+            let peak = Float(bitPattern: self.meterPeakBits.exchange(0, ordering: .relaxed))
+            let db = peak > 0 ? 20 * log10(peak) : -120
+            captureLog.notice("\(path, privacy: .public) \(device, privacy: .public): \(buffers) buffers, \(frames) frames in 5 s, peak \(String(format: "%.1f", db), privacy: .public) dB")
+        }
+        timer.resume()
+        meterTimer = timer
+    }
 
     public init(deviceUID: String?) {
         preferredDeviceUID = deviceUID
@@ -116,11 +156,13 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
                     right[i] = channels > 1 ? samples[i * channels + 1] : samples[i * channels]
                 }
                 ring.write(frameCount: frames, channelCount: 2) { $0 == 0 ? UnsafePointer(left) : UnsafePointer(right) }
+                self.meter(left, count: frames)
             } else {
                 let frames = Int(first.mDataByteSize) / 4
                 let l = UnsafePointer(data.assumingMemoryBound(to: Float.self))
                 let r = buffers.count > 1 ? buffers[1].mData.map { UnsafePointer($0.assumingMemoryBound(to: Float.self)) } ?? l : l
                 ring.write(frameCount: frames, channelCount: 2) { $0 == 0 ? l : r }
+                self.meter(l, count: frames)
             }
         }
         guard created == noErr, let newProc else {
@@ -134,6 +176,8 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
             return
         }
         procID = newProc
+        captureLog.notice("IO proc started on \(device.name, privacy: .public) (id \(device.id)) \(device.nominalSampleRate) Hz, \(device.inputChannelCount) ch")
+        startMeterReports(path: "IO proc", device: device.name)
         currentDeviceID = device.id
         startedRate = device.nominalSampleRate
         startedChannels = device.inputChannelCount
@@ -150,13 +194,16 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
             scheduleRestart(after: 1)
             return
         }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+        captureLog.notice("Engine on default input \(device.name, privacy: .public) (id \(device.id)): node format \(format.sampleRate) Hz, \(format.channelCount) ch; device \(device.nominalSampleRate) Hz, \(device.inputChannelCount) ch")
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             ring.write(buffer)
+            if let data = buffer.floatChannelData { self?.meter(data[0], count: Int(buffer.frameLength)) }
         }
         configObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
         ) { [weak self] _ in
             guard let self else { return }
+            captureLog.notice("AVAudioEngineConfigurationChange: restarting engine")
             self.control.async { self.scheduleRestart(after: 0.4) }
         }
         // Report the format before the first buffer lands so the consumer can configure itself.
@@ -167,15 +214,19 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
+            captureLog.error("Engine start failed: \(error.localizedDescription, privacy: .public)")
             status(.failed("Couldn't start \(device.name): \(error.localizedDescription)"))
             scheduleRestart(after: 2)
             return
         }
         self.engine = engine
         currentDeviceID = device.id
+        startMeterReports(path: "Engine", device: device.name)
     }
 
     private func teardown() {
+        meterTimer?.cancel()
+        meterTimer = nil
         pendingRestart?.cancel()
         pendingRestart = nil
         if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
@@ -254,6 +305,7 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         let alive = AudioDeviceCatalog.isAlive(id)
         let now = AudioDeviceCatalog.device(uid: AudioDeviceCatalog.uid(of: id) ?? "")
         if alive, let now, now.nominalSampleRate == startedRate, now.inputChannelCount == startedChannels { return }
+        captureLog.notice("Device changed (alive \(alive), rate \(now?.nominalSampleRate ?? 0), ch \(now?.inputChannelCount ?? 0)): restarting")
         scheduleRestart(after: 0.4)
     }
 
@@ -271,6 +323,9 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
     private func devicesChanged() {
         guard isStarted else { return }
         let wanted = preferredDeviceUID.map(AudioDeviceCatalog.device(uid:)) ?? AudioDeviceCatalog.defaultInputDevice()
-        if (procID == nil && engine == nil) || wanted?.id != currentDeviceID { rebuild() }
+        if (procID == nil && engine == nil) || wanted?.id != currentDeviceID {
+            captureLog.notice("Devices changed: wanted \(wanted?.name ?? "none", privacy: .public) (id \(wanted?.id ?? 0)), current \(self.currentDeviceID ?? 0): rebuilding")
+            rebuild()
+        }
     }
 }
