@@ -680,33 +680,8 @@ final class AppModel {
             Task { await restartInput() }
             return
         }
-        // Perfect digital silence from an interface or microphone: real hardware always has a
-        // little noise, so this is macOS handing over silence (an input opened while the
-        // microphone permission was still being settled). Reopen it; say so if it persists.
-        var hardware = false
-        switch settings.input {
-        case .device, .systemDefault: hardware = true
-        default: break
-        }
-        guard hardware, running, snapshot.peakHoldDB <= -119 else {
-            digitalSilenceSince = nil
-            return
-        }
-        let since = digitalSilenceSince ?? now
-        digitalSilenceSince = since
-        guard now - since >= 4 else { return }
-        digitalSilenceSince = nil
-        silenceRestarts += 1
-        if silenceRestarts == 1 {
-            append("Only digital silence from \(snapshot.sourceName ?? "the input"): reopening it")
-            Task { await restartInput() }
-        } else if silenceRestarts == 2 || silenceRestarts % 10 == 0 {
-            append("Still only silence from \(snapshot.sourceName ?? "the input"). Check System Settings › Privacy & Security › Microphone, then quit and reopen Needledrop")
-        }
     }
 
-    private var digitalSilenceSince: Double?
-    private var silenceRestarts = 0
 
     private func keepDisplayAwake(_ awake: Bool) {
         if awake, displayAwake == nil {

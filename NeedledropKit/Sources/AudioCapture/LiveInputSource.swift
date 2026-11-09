@@ -1,14 +1,15 @@
+import AVFAudio
 import AudioToolbox
 import CoreAudio
 import Foundation
 
-/// Captures from a hardware input (a USB interface, a microphone) straight from Core Audio
-/// with an IO proc on the device, and writes into the ring buffer.
+/// Captures from a hardware input (a USB interface, a microphone) into the ring buffer.
 ///
-/// Not AVAudioEngine: retargeting an engine's input node at a device other than the system
-/// default can leave it "running" with a tap that never fires — no audio at all from a USB
-/// interface. Reading the device directly works for any input, the same way the system-audio
-/// capture does. Never plays anything out. Survives the interface being unplugged: it reports
+/// The system default input goes through AVAudioEngine as it is: that's what works with a
+/// USB interface like the Behringer UCA202 (reading it directly with an IO proc gave only
+/// digital silence on a Mac mini). Any other input is read directly with an IO proc, since
+/// retargeting an engine's input node at a non-default device can leave its tap silent.
+/// Never plays anything out. Survives the interface being unplugged: it reports
 /// `.waitingForDevice` and starts again when the device reappears, the default input changes,
 /// or the device changes sample rate.
 public final class LiveInputSource: AudioSource, @unchecked Sendable {
@@ -22,6 +23,8 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
     private let control = DispatchQueue(label: "needledrop.capture.control")
     private let ioQueue = DispatchQueue(label: "needledrop.capture.io", qos: .userInteractive)
     private var procID: AudioDeviceIOProcID?
+    private var engine: AVAudioEngine?
+    private var configObserver: NSObjectProtocol?
     private var currentDeviceID: AudioDeviceID?
     private var ring: AudioRingBuffer?
     private var status: (@Sendable (SourceStatus) -> Void)?
@@ -88,6 +91,11 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
             return
         }
 
+        if device.id == AudioDeviceCatalog.defaultInputDevice()?.id {
+            startEngine(device, ring: ring, status: status)
+            return
+        }
+
         // Report the format before the first buffer lands so the consumer can configure itself.
         status(.running(CaptureFormat(sampleRate: device.nominalSampleRate, channelCount: min(2, device.inputChannelCount)),
                         sourceName: device.name))
@@ -132,9 +140,51 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         watchDevice(device.id)
     }
 
+    /// The default input, through AVAudioEngine's input node as the system set it up.
+    private func startEngine(_ device: AudioInputDevice, ring: AudioRingBuffer, status: @escaping @Sendable (SourceStatus) -> Void) {
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            status(.waitingForDevice("\(device.name) (no input channels)"))
+            scheduleRestart(after: 1)
+            return
+        }
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            ring.write(buffer)
+        }
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.control.async { self.scheduleRestart(after: 0.4) }
+        }
+        // Report the format before the first buffer lands so the consumer can configure itself.
+        status(.running(CaptureFormat(sampleRate: format.sampleRate, channelCount: Int(format.channelCount)),
+                        sourceName: device.name))
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            status(.failed("Couldn't start \(device.name): \(error.localizedDescription)"))
+            scheduleRestart(after: 2)
+            return
+        }
+        self.engine = engine
+        currentDeviceID = device.id
+    }
+
     private func teardown() {
         pendingRestart?.cancel()
         pendingRestart = nil
+        if let configObserver { NotificationCenter.default.removeObserver(configObserver) }
+        configObserver = nil
+        if let engine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        engine = nil
         if let currentDeviceID {
             unwatchDevice(currentDeviceID)
             if let procID {
@@ -221,6 +271,6 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
     private func devicesChanged() {
         guard isStarted else { return }
         let wanted = preferredDeviceUID.map(AudioDeviceCatalog.device(uid:)) ?? AudioDeviceCatalog.defaultInputDevice()
-        if procID == nil || wanted?.id != currentDeviceID { rebuild() }
+        if (procID == nil && engine == nil) || wanted?.id != currentDeviceID { rebuild() }
     }
 }
