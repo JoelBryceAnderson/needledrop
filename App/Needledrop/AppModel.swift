@@ -199,6 +199,15 @@ final class AppModel {
 
         let source: any AudioSource
         var recognizer: any TrackRecognizer = ShazamRecognizer()
+        var session = SessionConfig()
+        if usesAudD, let token = AudDTokenStore.load() {
+            recognizer = AudDRecognizer(token: token)
+            // A paid service: ask less often. Re-matches still come near each track's end
+            // (from its length), which is what catches the next song.
+            session.rematchInterval = 150
+            session.retryInterval = 6
+            session.unknownRetryInterval = 90
+        }
         var catalog: (any TrackCatalog)?
         switch settings.input {
         case .systemDefault, .device:
@@ -231,7 +240,7 @@ final class AppModel {
             }
         }
 
-        let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver,
+        let engine = Engine(detector: settings.detector, session: session, recognizer: recognizer, metadata: metadataResolver,
                             lyrics: lyricsProvider,
                             // The archive is for records you own: streamed audio isn't recorded.
                             archiver: settings.input == .systemAudio ? nil : Archiver(settings: settings.archive, library: library),
@@ -588,6 +597,30 @@ final class AppModel {
     private var pinnedCache = false
 
     var hasAPIKey: Bool { APIKeyStore.load() != nil }
+
+    // MARK: - Recognition service
+
+    var hasAudDToken: Bool { AudDTokenStore.load() != nil }
+
+    /// AudD names records when chosen, or on Auto once a token is saved.
+    var usesAudD: Bool {
+        switch settings.recognition {
+        case .audd: hasAudDToken
+        case .auto: hasAudDToken
+        case .shazam: false
+        }
+    }
+
+    func saveAudDToken(_ token: String) async {
+        AudDTokenStore.save(token)
+        append(token.isEmpty ? "AudD token removed" : "AudD token saved to the keychain — recognising with AudD")
+        await restartInput()
+    }
+
+    func setRecognition(_ choice: RecognitionChoice) async {
+        settings.recognition = choice
+        await restartInput()
+    }
 
     func saveAPIKey(_ key: String) {
         APIKeyStore.save(key.trimmingCharacters(in: .whitespacesAndNewlines))

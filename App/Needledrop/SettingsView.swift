@@ -105,6 +105,7 @@ struct SettingsView: View {
                     }
                 ))
             }
+            RecognitionSettings(model: model)
             Toggle("Follow Apple Music and Spotify", isOn: $model.settings.followMusicApps)
             HStack {
                 Text("Not recognised yet?")
@@ -381,5 +382,49 @@ private struct ArtDirectorSection: View {
                 .foregroundStyle(.secondary)
         }
         .onAppear { hasKey = model.hasAPIKey }
+    }
+}
+
+
+/// Which service names records, and the AudD token (kept in the keychain).
+private struct RecognitionSettings: View {
+    @Bindable var model: AppModel
+    @State private var token = ""
+    @State private var hasToken = false
+
+    var body: some View {
+        Picker("Recognition", selection: Binding(
+            get: { model.settings.recognition },
+            set: { choice in Task { await model.setRecognition(choice) } }
+        )) {
+            Text("Auto (AudD when a token is saved)").tag(RecognitionChoice.auto)
+            Text("Shazam (needs a signed build)").tag(RecognitionChoice.shazam)
+            Text("AudD").tag(RecognitionChoice.audd)
+        }
+        HStack {
+            SecureField(hasToken ? "AudD token saved in the keychain" : "AudD API token", text: $token)
+            Button("Save") {
+                let entered = token
+                token = ""
+                Task {
+                    await model.saveAudDToken(entered)
+                    hasToken = model.hasAudDToken
+                }
+            }
+            .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty)
+            if hasToken {
+                Button("Remove") {
+                    Task {
+                        await model.saveAudDToken("")
+                        hasToken = model.hasAudDToken
+                    }
+                }
+            }
+        }
+        .onAppear { hasToken = model.hasAudDToken }
+        Text(model.usesAudD ? "Recognising with AudD: short clips of what's playing are sent to audd.io."
+                            : "Recognising with Shazam, which only works in a build signed by an approved Apple developer account.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 }
