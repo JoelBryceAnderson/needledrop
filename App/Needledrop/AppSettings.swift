@@ -74,6 +74,9 @@ struct AppSettings: Codable, Equatable {
     var motion: MotionChoice = .directed
     /// Replays play through the Mac's speakers too (never the turntable path).
     var replayAudible = true
+    /// Play the turntable input out of this Mac's output (when the interface takes the
+    /// turntable's only output). Off by default: with a microphone it would feed back.
+    var passThrough = false
     /// Take what's playing from Apple Music / Spotify when they're the source.
     var followMusicApps = true
     var recognition: RecognitionChoice = .auto
@@ -109,6 +112,7 @@ struct AppSettings: Codable, Equatable {
         idleScreen = (try? c.decodeIfPresent(IdleScreen.self, forKey: .idleScreen)) ?? d.idleScreen
         motion = (try? c.decodeIfPresent(MotionChoice.self, forKey: .motion)) ?? d.motion
         replayAudible = try c.decodeIfPresent(Bool.self, forKey: .replayAudible) ?? d.replayAudible
+        passThrough = try c.decodeIfPresent(Bool.self, forKey: .passThrough) ?? d.passThrough
         followMusicApps = try c.decodeIfPresent(Bool.self, forKey: .followMusicApps) ?? d.followMusicApps
         recognition = (try? c.decodeIfPresent(RecognitionChoice.self, forKey: .recognition)) ?? d.recognition
         setupCompleted = try c.decodeIfPresent(Bool.self, forKey: .setupCompleted) ?? d.setupCompleted

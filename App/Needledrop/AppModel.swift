@@ -217,9 +217,9 @@ final class AppModel {
             Self.systemLog.notice("Microphone access: \(before, privacy: .public) → \(MicrophoneAccess.statusDescription, privacy: .public)")
             if microphoneDenied { append("Microphone access denied — enable Needledrop in System Settings › Privacy & Security › Microphone") }
             if case .device(let uid, _) = settings.input {
-                source = LiveInputSource(deviceUID: uid)
+                source = LiveInputSource(deviceUID: uid, playsThrough: settings.passThrough)
             } else {
-                source = LiveInputSource(deviceUID: nil)
+                source = LiveInputSource(deviceUID: nil, playsThrough: settings.passThrough)
             }
         case .systemAudio:
             source = SystemAudioSource()

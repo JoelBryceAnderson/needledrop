@@ -19,6 +19,9 @@ private let captureLog = Logger(subsystem: "com.needledrop.Needledrop", category
 public final class LiveInputSource: AudioSource, @unchecked Sendable {
     /// `nil` follows the system default input.
     public let preferredDeviceUID: String?
+    /// Also play the input out of the Mac's output device (see `PassThrough`).
+    public let playsThrough: Bool
+    private var passThrough: PassThrough?
     public var displayName: String {
         preferredDeviceUID.flatMap { AudioDeviceCatalog.device(uid: $0)?.name } ?? "System default input"
     }
@@ -77,14 +80,16 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
             let frames = self.meterFrames.exchange(0, ordering: .relaxed)
             let peak = Float(bitPattern: self.meterPeakBits.exchange(0, ordering: .relaxed))
             let db = peak > 0 ? 20 * log10(peak) : -120
-            captureLog.notice("\(path, privacy: .public) \(device, privacy: .public): \(buffers) buffers, \(frames) frames in 5 s, peak \(String(format: "%.1f", db), privacy: .public) dB")
+            let through = self.passThrough.map { "; \($0.takeStats())" } ?? ""
+            captureLog.notice("\(path, privacy: .public) \(device, privacy: .public): \(buffers) buffers, \(frames) frames in 5 s, peak \(String(format: "%.1f", db), privacy: .public) dB\(through, privacy: .public)")
         }
         timer.resume()
         meterTimer = timer
     }
 
-    public init(deviceUID: String?) {
+    public init(deviceUID: String?, playsThrough: Bool = false) {
         preferredDeviceUID = deviceUID
+        self.playsThrough = playsThrough
         left = .allocate(capacity: maxFrames)
         right = .allocate(capacity: maxFrames)
     }
@@ -143,6 +148,7 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         // IO procs get the device's input as 32-bit float: either one interleaved buffer, or
         // one buffer per channel (or per stream). Take the first two channels; mono feeds both.
         let left = self.left, right = self.right, maxFrames = self.maxFrames
+        let through = startPassThrough(sampleRate: device.nominalSampleRate)
         var newProc: AudioDeviceIOProcID?
         let created = AudioDeviceCreateIOProcIDWithBlock(&newProc, device.id, ioQueue) { _, input, _, _, _ in
             let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
@@ -156,12 +162,14 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
                     right[i] = channels > 1 ? samples[i * channels + 1] : samples[i * channels]
                 }
                 ring.write(frameCount: frames, channelCount: 2) { $0 == 0 ? UnsafePointer(left) : UnsafePointer(right) }
+                through?.write(frameCount: frames, left: left, right: right)
                 self.meter(left, count: frames)
             } else {
                 let frames = Int(first.mDataByteSize) / 4
                 let l = UnsafePointer(data.assumingMemoryBound(to: Float.self))
                 let r = buffers.count > 1 ? buffers[1].mData.map { UnsafePointer($0.assumingMemoryBound(to: Float.self)) } ?? l : l
                 ring.write(frameCount: frames, channelCount: 2) { $0 == 0 ? l : r }
+                through?.write(frameCount: frames, left: l, right: r)
                 self.meter(l, count: frames)
             }
         }
@@ -195,8 +203,10 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
             return
         }
         captureLog.notice("Engine on default input \(device.name, privacy: .public) (id \(device.id)): node format \(format.sampleRate) Hz, \(format.channelCount) ch; device \(device.nominalSampleRate) Hz, \(device.inputChannelCount) ch")
+        let through = startPassThrough(sampleRate: format.sampleRate)
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             ring.write(buffer)
+            through?.write(buffer)
             if let data = buffer.floatChannelData { self?.meter(data[0], count: Int(buffer.frameLength)) }
         }
         configObserver = NotificationCenter.default.addObserver(
@@ -224,7 +234,18 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         startMeterReports(path: "Engine", device: device.name)
     }
 
+    /// A fresh player per capture start, at the input's rate (the mixer converts to the output's).
+    private func startPassThrough(sampleRate: Double) -> PassThrough? {
+        guard playsThrough else { return nil }
+        let player = PassThrough(sampleRate: sampleRate)
+        player.start()
+        passThrough = player
+        return player
+    }
+
     private func teardown() {
+        passThrough?.stop()
+        passThrough = nil
         meterTimer?.cancel()
         meterTimer = nil
         pendingRestart?.cancel()

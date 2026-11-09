@@ -96,6 +96,16 @@ struct SettingsView: View {
                     }
                 }
             }
+            if model.settings.input == .systemDefault || { if case .device = model.settings.input { true } else { false } }() {
+                Toggle("Play the turntable through this Mac's speakers", isOn: Binding(
+                    get: { model.settings.passThrough },
+                    set: { on in
+                        model.settings.passThrough = on
+                        Task { await model.restartInput() }
+                    }
+                ))
+                .help("For when the audio interface takes the turntable's only output. Plays to the Mac's current output (speakers or AirPlay). Leave off with a microphone, or it will feed back.")
+            }
             if case .replay = model.settings.input {
                 Toggle("Play replay audio through this Mac", isOn: Binding(
                     get: { model.settings.replayAudible },
