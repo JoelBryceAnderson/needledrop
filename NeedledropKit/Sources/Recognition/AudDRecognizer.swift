@@ -1,3 +1,4 @@
+import AVFAudio
 import Foundation
 import os
 import Secrets
@@ -17,12 +18,13 @@ extension URLSession: AudDTransport {
 }
 
 /// Recognises records with AudD (audd.io): one short clip per matching window, sent as a
-/// 16 kHz WAV. For when ShazamKit isn't available (it needs an approved, signed build).
+/// 16 kHz stereo WAV. Stereo matters: on a Mac mini test, clips that missed as mono (at
+/// any rate) matched as stereo. For when ShazamKit isn't available (it needs an approved, signed build).
 ///
 /// AudD says where in the song the clip was (to the second). The match is reported with the
 /// position at the moment it comes back, so the playback clock and lyrics line up; later
 /// re-matches refine it.
-public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
+public final class AudDRecognizer: StereoTrackRecognizer, @unchecked Sendable {
     /// Seconds of audio sent per window: plenty for AudD, short enough to keep requests small.
     public static let clipSeconds = 9.0
     static let endpoint = URL(string: "https://api.audd.io/")!
@@ -34,7 +36,8 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
 
     // Analysis-thread state.
     private var sampleRate = 48_000.0
-    private var samples: [Float] = []
+    private var left: [Float] = []
+    private var right: [Float] = []
     private var sent = false
     private var window = 0
     /// Shared with replies arriving off-thread: the window results are still wanted for, and
@@ -56,8 +59,11 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
 
     public func beginWindow(sampleRate: Double) {
         self.sampleRate = sampleRate
-        samples.removeAll(keepingCapacity: true)
-        samples.reserveCapacity(Int(sampleRate * Self.clipSeconds) + 4096)
+        let capacity = Int(sampleRate * Self.clipSeconds) + 4096
+        left.removeAll(keepingCapacity: true)
+        right.removeAll(keepingCapacity: true)
+        left.reserveCapacity(capacity)
+        right.reserveCapacity(capacity)
         sent = false
         window += 1
         shared.openWindow.withLock { $0 = window }
@@ -65,13 +71,18 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
     }
 
     public func feed(_ mono: UnsafePointer<Float>, frameCount: Int, endTime: Double) {
+        feed(left: mono, right: mono, frameCount: frameCount, endTime: endTime)
+    }
+
+    public func feed(left l: UnsafePointer<Float>, right r: UnsafePointer<Float>, frameCount: Int, endTime: Double) {
         guard !sent else { return }
-        samples.append(contentsOf: UnsafeBufferPointer(start: mono, count: frameCount))
-        guard Double(samples.count) >= sampleRate * Self.clipSeconds else { return }
+        left.append(contentsOf: UnsafeBufferPointer(start: l, count: frameCount))
+        right.append(contentsOf: UnsafeBufferPointer(start: r, count: frameCount))
+        guard Double(left.count) >= sampleRate * Self.clipSeconds else { return }
         sent = true
-        let peak = samples.reduce(Float(0)) { max($0, abs($1)) }
+        let peak = left.reduce(Float(0)) { max($0, abs($1)) }
         auddLog.notice("Window \(self.window): sending \(Self.clipSeconds) s clip, peak \(String(format: "%.1f", peak > 0 ? 20 * log10(peak) : -120), privacy: .public) dB")
-        let wav = Self.wav(Self.resample(samples, from: sampleRate, to: Self.uploadRate), sampleRate: Self.uploadRate)
+        let wav = Self.wav(Self.resample([left, right], from: sampleRate, to: Self.uploadRate), sampleRate: Self.uploadRate)
         Self.saveDebugClip(wav, window: window)
         let request = Self.request(token: token, wav: wav)
         let mine = window, sentAt = ContinuousClock.now
@@ -108,7 +119,8 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
     }
 
     public func endWindow() {
-        samples.removeAll(keepingCapacity: true)
+        left.removeAll(keepingCapacity: true)
+        right.removeAll(keepingCapacity: true)
         shared.openWindow.withLock { $0 = nil }
     }
 
@@ -211,36 +223,62 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
 
     // MARK: - Audio
 
-    /// Down to `rate`, averaging over each output sample's span (a cheap low-pass).
-    static func resample(_ input: [Float], from source: Double, to rate: Double) -> [Float] {
-        guard source > rate, !input.isEmpty else { return input }
-        let step = source / rate
-        let count = Int(Double(input.count) / step)
-        var out = [Float](repeating: 0, count: count)
-        for i in 0..<count {
-            let a = Int(Double(i) * step), b = min(input.count, max(a + 1, Int(Double(i + 1) * step)))
-            var sum: Float = 0
-            for j in a..<b { sum += input[j] }
-            out[i] = sum / Float(b - a)
+    /// Down to `rate` with AVAudioConverter (properly band-limited: a crude average let
+    /// aliasing through, and AudD missed clips it matched once resampled properly).
+    /// `channels` are planar and equally long.
+    static func resample(_ channels: [[Float]], from source: Double, to rate: Double) -> [[Float]] {
+        guard source != rate, let count = channels.first?.count, count > 0,
+              let inFormat = AVAudioFormat(standardFormatWithSampleRate: source, channels: AVAudioChannelCount(channels.count)),
+              let outFormat = AVAudioFormat(standardFormatWithSampleRate: rate, channels: AVAudioChannelCount(channels.count)),
+              let converter = AVAudioConverter(from: inFormat, to: outFormat),
+              let input = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: AVAudioFrameCount(count)),
+              let output = AVAudioPCMBuffer(pcmFormat: outFormat,
+                                            frameCapacity: AVAudioFrameCount(Double(count) * rate / source) + 1024)
+        else { return channels }
+        converter.sampleRateConverterQuality = AVAudioQuality.max.rawValue
+        input.frameLength = AVAudioFrameCount(count)
+        for (c, samples) in channels.enumerated() {
+            samples.withUnsafeBufferPointer { input.floatChannelData![c].update(from: $0.baseAddress!, count: count) }
         }
-        return out
+        var given = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if given { status.pointee = .endOfStream; return nil }
+            given = true
+            status.pointee = .haveData
+            return input
+        }
+        guard error == nil else { return channels }
+        let n = Int(output.frameLength)
+        return (0..<channels.count).map { Array(UnsafeBufferPointer(start: output.floatChannelData![$0], count: n)) }
     }
 
-    /// 16-bit PCM mono WAV.
-    static func wav(_ samples: [Float], sampleRate: Double) -> Data {
-        var pcm = Data(capacity: samples.count * 2)
-        for s in samples {
-            var v = Int16(max(-1, min(1, s)) * Float(Int16.max)).littleEndian
-            withUnsafeBytes(of: &v) { pcm.append(contentsOf: $0) }
+    static func resample(_ input: [Float], from source: Double, to rate: Double) -> [Float] {
+        resample([input], from: source, to: rate).first ?? input
+    }
+
+    /// 16-bit PCM WAV, interleaving the planar `channels`.
+    static func wav(_ channels: [[Float]], sampleRate: Double) -> Data {
+        let count = channels.map(\.count).min() ?? 0
+        var pcm = Data(capacity: count * channels.count * 2)
+        for i in 0..<count {
+            for channel in channels {
+                var v = Int16(max(-1, min(1, channel[i])) * Float(Int16.max)).littleEndian
+                withUnsafeBytes(of: &v) { pcm.append(contentsOf: $0) }
+            }
         }
         var header = Data()
         func u32(_ v: UInt32) { var x = v.littleEndian; withUnsafeBytes(of: &x) { header.append(contentsOf: $0) } }
         func u16(_ v: UInt16) { var x = v.littleEndian; withUnsafeBytes(of: &x) { header.append(contentsOf: $0) } }
-        let rate = UInt32(sampleRate)
+        let rate = UInt32(sampleRate), n = UInt16(channels.count)
         header.append(Data("RIFF".utf8)); u32(36 + UInt32(pcm.count)); header.append(Data("WAVE".utf8))
-        header.append(Data("fmt ".utf8)); u32(16); u16(1); u16(1); u32(rate); u32(rate * 2); u16(2); u16(16)
+        header.append(Data("fmt ".utf8)); u32(16); u16(1); u16(n); u32(rate); u32(rate * UInt32(n) * 2); u16(n * 2); u16(16)
         header.append(Data("data".utf8)); u32(UInt32(pcm.count))
         return header + pcm
+    }
+
+    static func wav(_ samples: [Float], sampleRate: Double) -> Data {
+        wav([samples], sampleRate: sampleRate)
     }
 }
 

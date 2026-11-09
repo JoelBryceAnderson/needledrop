@@ -14,6 +14,12 @@ public protocol TrackRecognizer: AnyObject, Sendable {
     func endWindow()
 }
 
+/// A recognizer that wants both channels rather than the mono mix (AudD matches stereo
+/// clips of a record far more often than the same clips summed to mono).
+public protocol StereoTrackRecognizer: TrackRecognizer {
+    func feed(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frameCount: Int, endTime: Double)
+}
+
 public enum RecognizerResult: Sendable {
     case match(TrackMatch)
     case error(String)
@@ -75,6 +81,10 @@ public final class RecognitionController: AudioObserver, @unchecked Sendable {
             if openWindow != nil { recognizer.endWindow() }
             recognizer.beginWindow(sampleRate: sampleRate)
             openWindow = requested
+        }
+        if let stereo = recognizer as? any StereoTrackRecognizer {
+            stereo.feed(left: left, right: right, frameCount: frameCount, endTime: endTime)
+            return
         }
         if mono.count != frameCount { mono = [Float](repeating: 0, count: frameCount) }
         for i in 0..<frameCount { mono[i] = (left[i] + right[i]) * 0.5 }

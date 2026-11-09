@@ -54,12 +54,29 @@ private let success = #"""
     @Test func clipsAre16kHzMonoWAV() throws {
         let tone = (0..<48_000).map { Float(sin(Double($0) * 2 * .pi * 440 / 48_000)) * 0.5 }
         let down = AudDRecognizer.resample(tone, from: 48_000, to: 16_000)
-        #expect(down.count == 16_000)
+        #expect(abs(down.count - 16_000) <= 16)
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("audd-\(UUID()).wav")
         try AudDRecognizer.wav(down, sampleRate: 16_000).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
         let file = try AVAudioFile(forReading: url)
-        #expect(file.fileFormat.sampleRate == 16_000 && file.fileFormat.channelCount == 1 && file.length == 16_000)
+        #expect(file.fileFormat.sampleRate == 16_000 && file.fileFormat.channelCount == 1 && abs(file.length - 16_000) <= 16)
+    }
+
+    @Test func stereoClipsKeepBothChannelsAndFilterAliasing() throws {
+        // 440 Hz left, silence right; plus a 10 kHz tone that must not fold into the 16 kHz clip.
+        let n = 48_000
+        let left = (0..<n).map { Float(sin(Double($0) * 2 * .pi * 440 / 48_000) * 0.5) }
+        let high = (0..<n).map { Float(sin(Double($0) * 2 * .pi * 10_000 / 48_000) * 0.5) }
+        let down = AudDRecognizer.resample([left, high], from: 48_000, to: 16_000)
+        #expect(down.count == 2 && abs(down[0].count - 16_000) <= 16)
+        let rms = { (x: ArraySlice<Float>) in (x.reduce(0) { $0 + $1 * $1 } / Float(x.count)).squareRoot() }
+        #expect(rms(down[0][1000..<15000]) > 0.3)   // the 440 Hz tone survives (0.35 RMS)
+        #expect(rms(down[1][1000..<15000]) < 0.01)  // 10 kHz is above 8 kHz: filtered, not aliased
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("audd-\(UUID()).wav")
+        try AudDRecognizer.wav(down, sampleRate: 16_000).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let file = try AVAudioFile(forReading: url)
+        #expect(file.fileFormat.sampleRate == 16_000 && file.fileFormat.channelCount == 2)
     }
 
     @Test func sendsOneClipPerWindowAndReportsWhereTheSongIsNow() async throws {
