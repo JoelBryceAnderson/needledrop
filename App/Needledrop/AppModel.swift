@@ -75,6 +75,11 @@ final class AppModel {
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
     private(set) var microphoneDenied = false
+    /// Start/stop recording of whatever the input hears (vinyl podcasts, whole sides).
+    let manualRecording = ManualRecording()
+    private(set) var recordingStartedAt: Date?
+    private(set) var savingRecording = false
+    private(set) var lastRecording: URL?
     let presentation = PresentationController()
     /// Hue lights following the album colours and the beat.
     let lights = LightsController()
@@ -165,6 +170,9 @@ final class AppModel {
         for file in Archiver.recoverOrphans(root: settings.archive.root) {
             append("Recovered an interrupted side recording: Sides/\(file.lastPathComponent)")
         }
+        for file in ManualRecording.recoverOrphans(root: settings.archive.root) {
+            append("Recovered an interrupted recording: Recordings/\(file.lastPathComponent)")
+        }
         startRecoveryWatch()
         refreshDevices()
         await restartInput()
@@ -193,6 +201,9 @@ final class AppModel {
     }
 
     func restartInput() async {
+        // A recording only finishes while audio flows: stop it before an input that has none
+        // for the turntable (streamed audio isn't recorded).
+        if recordingStartedAt != nil, settings.input == .systemAudio { await stopRecording() }
         eventTask?.cancel()
         await engine.stop()
         metadata = nil
@@ -247,7 +258,8 @@ final class AppModel {
                             lyrics: lyricsProvider,
                             // The archive is for records you own: streamed audio isn't recorded.
                             archiver: settings.input == .systemAudio ? nil : Archiver(settings: settings.archive, library: library),
-                            catalog: catalog)
+                            catalog: catalog,
+                            extraObservers: [manualRecording.recorder])
         self.engine = engine
         eventTask = Task { [weak self] in
             for await event in engine.events {
@@ -263,6 +275,8 @@ final class AppModel {
 
     func setSampleRate(_ rate: Double) async {
         guard case .device(let uid, _) = settings.input else { return }
+        // A new rate means a new file format: save what's recorded so far first.
+        if recordingStartedAt != nil { await stopRecording() }
         do {
             try AudioDeviceCatalog.setNominalSampleRate(rate, deviceUID: uid)
             refreshDevices()
@@ -270,6 +284,44 @@ final class AppModel {
             append("Couldn't set sample rate: \(error)")
         }
         // The engine sees a configuration change and rebuilds itself at the new rate.
+    }
+
+    // MARK: - Manual recording
+
+    var isRecording: Bool { recordingStartedAt != nil }
+
+    func toggleRecording() async {
+        if isRecording { await stopRecording() } else { await startRecording() }
+    }
+
+    func startRecording() async {
+        guard !isRecording, !savingRecording else { return }
+        guard settings.input != .systemAudio else {
+            append("Recording is for the turntable: switch Listening to your audio interface first")
+            return
+        }
+        do {
+            try await manualRecording.start(root: settings.archive.root)
+            recordingStartedAt = await manualRecording.startedAt
+            append("● Recording")
+        } catch {
+            append("✖ Couldn't start recording: \(error.localizedDescription)")
+        }
+    }
+
+    func stopRecording() async {
+        guard isRecording else { return }
+        recordingStartedAt = nil
+        savingRecording = true
+        defer { savingRecording = false }
+        append("Saving recording…")
+        do {
+            let saved = try await manualRecording.stop(format: settings.archive.format, bitDepth: settings.archive.bitDepth)
+            lastRecording = saved.url
+            append("Saved recording: Recordings/\(saved.url.lastPathComponent) (\(formatDuration(saved.duration)))")
+        } catch {
+            append("✖ Recording: \(error)")
+        }
     }
 
     func updateDetector(_ config: SideDetectorConfig) {

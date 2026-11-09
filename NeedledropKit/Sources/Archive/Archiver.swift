@@ -265,11 +265,11 @@ public actor Archiver {
     /// "Recovered …" so nothing played is lost (they can be re-split by hand). Call at launch,
     /// before anything starts recording. Returns the recovered files.
     @discardableResult
-    public static func recoverOrphans(root: URL) -> [URL] {
+    public static func recoverOrphans(root: URL, into folder: String = "Sides", prefix: String = "Recovered") -> [URL] {
         let fm = FileManager.default
         let incoming = root.appendingPathComponent(".incoming", isDirectory: true)
         guard let files = try? fm.contentsOfDirectory(at: incoming, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return [] }
-        let sides = root.appendingPathComponent("Sides", isDirectory: true)
+        let sides = root.appendingPathComponent(folder, isDirectory: true)
         var recovered: [URL] = []
         for file in files where file.pathExtension == "caf" {
             let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
@@ -280,7 +280,7 @@ public actor Archiver {
             }
             try? fm.createDirectory(at: sides, withIntermediateDirectories: true)
             let date = values?.contentModificationDate ?? Date()
-            let destination = unique(sides.appendingPathComponent("Recovered \(stamp(date)).caf"))
+            let destination = unique(sides.appendingPathComponent("\(prefix) \(stamp(date)).caf"))
             if (try? fm.moveItem(at: file, to: destination)) != nil { recovered.append(destination) }
         }
         return recovered

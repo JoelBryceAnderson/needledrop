@@ -115,6 +115,7 @@ struct SettingsView: View {
                     }
                 ))
             }
+            RecordingRow(model: model)
             RecognitionSettings(model: model)
             Toggle("Follow Apple Music and Spotify", isOn: $model.settings.followMusicApps)
             HStack {
@@ -436,5 +437,32 @@ private struct RecognitionSettings: View {
                             : "Recognising with Shazam, which only works in a build signed by an approved Apple developer account.")
             .font(.caption)
             .foregroundStyle(.secondary)
+    }
+}
+
+/// Start/stop a free recording, with how long it's been going and where the last one went.
+private struct RecordingRow: View {
+    let model: AppModel
+
+    var body: some View {
+        HStack {
+            if let started = model.recordingStartedAt {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Label("Recording \(formatDuration(context.date.timeIntervalSince(started)))", systemImage: "record.circle.fill")
+                        .foregroundStyle(.red)
+                        .monospacedDigit()
+                }
+            } else if model.savingRecording {
+                Text("Saving recording…").foregroundStyle(.secondary)
+            } else {
+                Text("Record anything (a vinyl podcast, a whole side)").foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let last = model.lastRecording, !model.isRecording {
+                Button("Show Last") { NSWorkspace.shared.activateFileViewerSelecting([last]) }
+            }
+            RecordButton(model: model)
+        }
+        .help("Saves to Recordings in the archive folder, in the archive format. ⌃⌘R from the menu bar.")
     }
 }
