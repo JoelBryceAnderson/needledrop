@@ -21,6 +21,14 @@ public enum AudioDeviceCatalog {
         inputDevices().first { $0.uid == uid }
     }
 
+    /// Whether the device is still there (it reports false while it's being unplugged).
+    static func isAlive(_ id: AudioDeviceID) -> Bool {
+        let alive: UInt32 = read(id, kAudioDevicePropertyDeviceIsAlive, initial: 0) ?? 0
+        return alive != 0
+    }
+
+    static func uid(of id: AudioDeviceID) -> String? { readString(id, kAudioDevicePropertyDeviceUID) }
+
     public static func defaultInputDevice() -> AudioInputDevice? {
         guard let id: AudioDeviceID = read(
             AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultInputDevice, initial: 0
