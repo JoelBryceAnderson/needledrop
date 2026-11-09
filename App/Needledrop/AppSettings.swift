@@ -16,7 +16,7 @@ enum RPMChoice: String, Codable, CaseIterable { case auto, rpm33, rpm45 }
 enum IdleScreen: String, Codable, CaseIterable { case libraryWall, black }
 /// Which service names records. Auto: AudD when a token is saved (Shazam needs an approved,
 /// signed build), else Shazam.
-enum RecognitionChoice: String, Codable, CaseIterable { case auto, shazam, audd }
+enum RecognitionChoice: String, Codable, CaseIterable { case auto, shazam, audd, off }
 /// How much the picture is directed over a song (shots, camera moves, the cover moving).
 enum MotionChoice: String, Codable, CaseIterable {
     case still, gentle, directed

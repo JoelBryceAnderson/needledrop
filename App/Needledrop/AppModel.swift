@@ -80,6 +80,8 @@ final class AppModel {
     private(set) var recordingStartedAt: Date?
     private(set) var savingRecording = false
     private(set) var lastRecording: URL?
+    /// What recognition was before it was switched off from the menu.
+    private var lastRecognitionChoice: RecognitionChoice?
     let presentation = PresentationController()
     /// Hue lights following the album colours and the beat.
     let lights = LightsController()
@@ -212,7 +214,9 @@ final class AppModel {
         let source: any AudioSource
         var recognizer: any TrackRecognizer = ShazamRecognizer()
         var session = SessionConfig()
-        if usesAudD, let token = AudDTokenStore.load() {
+        if settings.recognition == .off {
+            recognizer = NoRecognizer()
+        } else if usesAudD, let token = AudDTokenStore.load() {
             recognizer = AudDRecognizer(token: token)
             // A paid service: ask less often. Re-matches still come near each track's end
             // (from its length), which is what catches the next song.
@@ -405,7 +409,7 @@ final class AppModel {
             renderer?.scoreTimeline = nil
             if let track {
                 append("♫ \(track.artist) — \(track.title)")
-            } else if engine.session().unidentified {
+            } else if engine.session().unidentified, settings.recognition != .off {
                 append("Couldn't identify this record")
                 renderer?.show(.neutral)
             }
@@ -662,7 +666,20 @@ final class AppModel {
         switch settings.recognition {
         case .audd: hasAudDToken
         case .auto: hasAudDToken
-        case .shazam: false
+        case .shazam, .off: false
+        }
+    }
+
+    var recognitionOn: Bool { settings.recognition != .off }
+
+    /// The menu toggle: Off, or back to the choice before it (Auto if there wasn't one).
+    func setRecognitionOn(_ on: Bool) async {
+        guard on != recognitionOn else { return }
+        if on {
+            await setRecognition(lastRecognitionChoice ?? .auto)
+        } else {
+            lastRecognitionChoice = settings.recognition
+            await setRecognition(.off)
         }
     }
 
@@ -674,6 +691,7 @@ final class AppModel {
 
     func setRecognition(_ choice: RecognitionChoice) async {
         settings.recognition = choice
+        append(choice == .off ? "Recognition off: nothing is sent anywhere" : "Recognition on")
         await restartInput()
     }
 

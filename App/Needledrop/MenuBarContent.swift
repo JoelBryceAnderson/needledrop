@@ -19,6 +19,10 @@ struct MenuBarContent: View {
         Toggle("Album Art", isOn: Binding(get: { model.settings.showCover }, set: { _ in model.toggleCover() }))
             .keyboardShortcut("a", modifiers: [.command, .control])
         WhatsPlayingButton()
+        Toggle("Recognise Records", isOn: Binding(
+            get: { model.recognitionOn },
+            set: { on in Task { await model.setRecognitionOn(on) } }
+        ))
         RecordButton(model: model)
         Button("Set Up Turntable…") { model.showSetup() }
         Button("Re-roll Album Look") { model.rerollAlbumLook() }

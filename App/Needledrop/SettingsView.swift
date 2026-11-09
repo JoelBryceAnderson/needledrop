@@ -411,6 +411,7 @@ private struct RecognitionSettings: View {
             Text("Auto (AudD when a token is saved)").tag(RecognitionChoice.auto)
             Text("Shazam (needs a signed build)").tag(RecognitionChoice.shazam)
             Text("AudD").tag(RecognitionChoice.audd)
+            Text("Off").tag(RecognitionChoice.off)
         }
         HStack {
             SecureField(hasToken ? "AudD token saved on this Mac" : "AudD API token", text: $token)
@@ -433,8 +434,9 @@ private struct RecognitionSettings: View {
             }
         }
         .onAppear { hasToken = model.hasAudDToken }
-        Text(model.usesAudD ? "Recognising with AudD: short clips of what's playing are sent to audd.io."
-                            : "Recognising with Shazam, which only works in a build signed by an approved Apple developer account.")
+        Text(!model.recognitionOn ? "Recognition is off: nothing is sent anywhere. Name a record with What's Playing? if you like."
+             : model.usesAudD ? "Recognising with AudD: short clips of what's playing are sent to audd.io."
+             : "Recognising with Shazam, which only works in a build signed by an approved Apple developer account.")
             .font(.caption)
             .foregroundStyle(.secondary)
     }
