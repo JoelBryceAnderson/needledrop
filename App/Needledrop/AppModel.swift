@@ -614,7 +614,7 @@ final class AppModel {
 
     func saveAudDToken(_ token: String) async {
         AudDTokenStore.save(token)
-        append(token.isEmpty ? "AudD token removed" : "AudD token saved to the keychain — recognising with AudD")
+        append(token.isEmpty ? "AudD token removed" : "AudD token saved — recognising with AudD")
         await restartInput()
     }
 
@@ -625,7 +625,7 @@ final class AppModel {
 
     func saveAPIKey(_ key: String) {
         APIKeyStore.save(key.trimmingCharacters(in: .whitespacesAndNewlines))
-        append(key.isEmpty ? "API key removed" : "API key saved to the keychain")
+        append(key.isEmpty ? "API key removed" : "API key saved")
     }
 
     private func applyVisualSettings() {

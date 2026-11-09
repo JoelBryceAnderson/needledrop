@@ -341,7 +341,7 @@ private struct ArtDirectorSection: View {
         Section {
             Toggle("Claude designs each album's look", isOn: $model.settings.artDirector.enabled)
             HStack {
-                SecureField(hasKey ? "Saved in the keychain" : "Anthropic API key", text: $key)
+                SecureField(hasKey ? "Saved on this Mac" : "Anthropic API key", text: $key)
                 Button("Save") {
                     model.saveAPIKey(key)
                     key = ""
@@ -386,7 +386,7 @@ private struct ArtDirectorSection: View {
 }
 
 
-/// Which service names records, and the AudD token (kept in the keychain).
+/// Which service names records, and the AudD token (kept privately on this Mac).
 private struct RecognitionSettings: View {
     @Bindable var model: AppModel
     @State private var token = ""
@@ -402,7 +402,7 @@ private struct RecognitionSettings: View {
             Text("AudD").tag(RecognitionChoice.audd)
         }
         HStack {
-            SecureField(hasToken ? "AudD token saved in the keychain" : "AudD API token", text: $token)
+            SecureField(hasToken ? "AudD token saved on this Mac" : "AudD API token", text: $token)
             Button("Save") {
                 let entered = token
                 token = ""

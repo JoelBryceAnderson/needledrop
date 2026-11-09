@@ -1,5 +1,5 @@
 import Foundation
-import Security
+import Secrets
 import Synchronization
 
 /// Sends HTTP requests (URLSession in the app, a fake in tests).
@@ -211,37 +211,18 @@ public final class AudDRecognizer: TrackRecognizer, @unchecked Sendable {
     }
 }
 
-/// The AudD API token, kept in the login keychain.
+/// The AudD API token, in a file only this user can read (see `SecretStore`).
 public enum AudDTokenStore {
-    static let service = "com.needledrop.Needledrop"
-    static let account = "audd-api-token"
+    static let name = "audd-api-token"
 
     /// The saved token, else `AUDD_API_TOKEN` from the environment (handy in development).
     public static func load() -> String? {
-        var query = baseQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data,
-           let token = String(data: data, encoding: .utf8), !token.isEmpty {
-            return token
-        }
-        return ProcessInfo.processInfo.environment["AUDD_API_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
+        SecretStore.loadString(name, environment: "AUDD_API_TOKEN")
     }
 
     /// Saves (or, with an empty string, deletes) the token.
     @discardableResult
     public static func save(_ token: String) -> Bool {
-        SecItemDelete(baseQuery as CFDictionary)
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return true }
-        var item = baseQuery
-        item[kSecValueData as String] = Data(trimmed.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
-    }
-
-    private static var baseQuery: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+        SecretStore.saveString(name, token)
     }
 }

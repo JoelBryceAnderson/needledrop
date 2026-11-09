@@ -1,6 +1,6 @@
 import CryptoKit
 import Foundation
-import Security
+import Secrets
 
 /// Every direction Claude has given each album, which one is current, and whether it's
 /// pinned (a pinned look survives re-rolls). On disk, one JSON file per album.
@@ -61,36 +61,18 @@ public actor StyleStore {
     }
 }
 
-/// The Anthropic API key, kept in the login keychain.
+/// The Anthropic API key, in a file only this user can read (see `SecretStore`).
 public enum APIKeyStore {
-    static let service = "com.needledrop.Needledrop"
-    static let account = "anthropic-api-key"
+    static let name = "anthropic-api-key"
 
     /// The saved key, else `ANTHROPIC_API_KEY` from the environment (handy in development).
     public static func load() -> String? {
-        var query = baseQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data,
-           let key = String(data: data, encoding: .utf8), !key.isEmpty {
-            return key
-        }
-        return ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"].flatMap { $0.isEmpty ? nil : $0 }
+        SecretStore.loadString(name, environment: "ANTHROPIC_API_KEY")
     }
 
     /// Saves (or, with an empty string, deletes) the key.
     @discardableResult
     public static func save(_ key: String) -> Bool {
-        SecItemDelete(baseQuery as CFDictionary)
-        guard !key.isEmpty else { return true }
-        var item = baseQuery
-        item[kSecValueData as String] = Data(key.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
-    }
-
-    private static var baseQuery: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+        SecretStore.saveString(name, key)
     }
 }

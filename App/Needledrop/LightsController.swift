@@ -6,7 +6,7 @@ import SessionState
 import Visuals
 
 /// The Lights settings: which bridge, which light or area, and how much it moves.
-/// Keys live in the keychain (`HueKeyStore`), not here.
+/// Keys live in `HueKeyStore` (private files), not here.
 struct LightsSettings: Codable, Equatable {
     var enabled = false
     var bridge: HueBridge?
