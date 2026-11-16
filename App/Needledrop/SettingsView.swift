@@ -96,6 +96,16 @@ struct SettingsView: View {
                     }
                 }
             }
+            if model.settings.input == .systemDefault || { if case .device = model.settings.input { true } else { false } }() {
+                Toggle("Play the turntable through this Mac's speakers", isOn: Binding(
+                    get: { model.settings.passThrough },
+                    set: { on in
+                        model.settings.passThrough = on
+                        Task { await model.restartInput() }
+                    }
+                ))
+                .help("For when the audio interface takes the turntable's only output. Plays to the Mac's current output (speakers or AirPlay). Leave off with a microphone, or it will feed back.")
+            }
             if case .replay = model.settings.input {
                 Toggle("Play replay audio through this Mac", isOn: Binding(
                     get: { model.settings.replayAudible },
@@ -105,6 +115,8 @@ struct SettingsView: View {
                     }
                 ))
             }
+            RecordingRow(model: model)
+            RecognitionSettings(model: model)
             Toggle("Follow Apple Music and Spotify", isOn: $model.settings.followMusicApps)
             HStack {
                 Text("Not recognised yet?")
@@ -340,7 +352,7 @@ private struct ArtDirectorSection: View {
         Section {
             Toggle("Claude designs each album's look", isOn: $model.settings.artDirector.enabled)
             HStack {
-                SecureField(hasKey ? "Saved in the keychain" : "Anthropic API key", text: $key)
+                SecureField(hasKey ? "Saved on this Mac" : "Anthropic API key", text: $key)
                 Button("Save") {
                     model.saveAPIKey(key)
                     key = ""
@@ -381,5 +393,78 @@ private struct ArtDirectorSection: View {
                 .foregroundStyle(.secondary)
         }
         .onAppear { hasKey = model.hasAPIKey }
+    }
+}
+
+
+/// Which service names records, and the AudD token (kept privately on this Mac).
+private struct RecognitionSettings: View {
+    @Bindable var model: AppModel
+    @State private var token = ""
+    @State private var hasToken = false
+
+    var body: some View {
+        Picker("Recognition", selection: Binding(
+            get: { model.settings.recognition },
+            set: { choice in Task { await model.setRecognition(choice) } }
+        )) {
+            Text("Auto (AudD when a token is saved)").tag(RecognitionChoice.auto)
+            Text("Shazam (needs a signed build)").tag(RecognitionChoice.shazam)
+            Text("AudD").tag(RecognitionChoice.audd)
+            Text("Off").tag(RecognitionChoice.off)
+        }
+        HStack {
+            SecureField(hasToken ? "AudD token saved on this Mac" : "AudD API token", text: $token)
+            Button("Save") {
+                let entered = token
+                token = ""
+                Task {
+                    await model.saveAudDToken(entered)
+                    hasToken = model.hasAudDToken
+                }
+            }
+            .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty)
+            if hasToken {
+                Button("Remove") {
+                    Task {
+                        await model.saveAudDToken("")
+                        hasToken = model.hasAudDToken
+                    }
+                }
+            }
+        }
+        .onAppear { hasToken = model.hasAudDToken }
+        Text(!model.recognitionOn ? "Recognition is off: nothing is sent anywhere. Name a record with What's Playing? if you like."
+             : model.usesAudD ? "Recognising with AudD: short clips of what's playing are sent to audd.io."
+             : "Recognising with Shazam, which only works in a build signed by an approved Apple developer account.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+}
+
+/// Start/stop a free recording, with how long it's been going and where the last one went.
+private struct RecordingRow: View {
+    let model: AppModel
+
+    var body: some View {
+        HStack {
+            if let started = model.recordingStartedAt {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Label("Recording \(formatDuration(context.date.timeIntervalSince(started)))", systemImage: "record.circle.fill")
+                        .foregroundStyle(.red)
+                        .monospacedDigit()
+                }
+            } else if model.savingRecording {
+                Text("Saving recording…").foregroundStyle(.secondary)
+            } else {
+                Text("Record anything (a vinyl podcast, a whole side)").foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let last = model.lastRecording, !model.isRecording {
+                Button("Show Last") { NSWorkspace.shared.activateFileViewerSelecting([last]) }
+            }
+            RecordButton(model: model)
+        }
+        .help("Saves to Recordings in the archive folder, in the archive format. ⌃⌘R from the menu bar.")
     }
 }

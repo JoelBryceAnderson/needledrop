@@ -7,22 +7,22 @@ import Testing
 @Suite struct LRCParserTests {
     @Test func parsesTimestampsInEveryPrecision() {
         let lines = LRCParser.parse("""
-            [00:12.34]Now here you go again
-            [00:17.5]You say you want your freedom
-            [01:02]Well who am I to keep you down
-            [01:05.120]It's only right
+            [00:12.34]Fold the map along the river
+            [00:17.5]Every crease a place we've been
+            [01:02]Hold the corner to the light
+            [01:05.120]It's only paper
             """)
         #expect(lines.map(\.time) == [12.34, 17.5, 62, 65.12])
-        #expect(lines[0].text == "Now here you go again")
+        #expect(lines[0].text == "Fold the map along the river")
     }
 
     @Test func expandsMultipleStampsAndSorts() {
         let lines = LRCParser.parse("""
-            [00:30.00][01:30.00]Thunder only happens when it's raining
+            [00:30.00][01:30.00]Paper weather rolls in after midnight
             [00:10.00]Verse
             """)
         #expect(lines.map(\.time) == [10, 30, 90])
-        #expect(lines[2].text == "Thunder only happens when it's raining")
+        #expect(lines[2].text == "Paper weather rolls in after midnight")
     }
 
     @Test func ignoresTagsAndAppliesOffset() {
@@ -37,8 +37,8 @@ import Testing
     }
 
     @Test func keepsInstrumentalBreaksAndStripsWordStamps() {
-        let lines = LRCParser.parse("[00:01.00]<00:01.00>Players <00:01.50>only <00:02.00>love\r\n[00:05.00]\r\nnot a lyric line")
-        #expect(lines == [LyricLine(time: 1, text: "Players only love"), LyricLine(time: 5, text: "")])
+        let lines = LRCParser.parse("[00:01.00]<00:01.00>Ink <00:01.50>dries <00:02.00>slow\r\n[00:05.00]\r\nnot a lyric line")
+        #expect(lines == [LyricLine(time: 1, text: "Ink dries slow"), LyricLine(time: 5, text: "")])
     }
 
     @Test func rejectsGarbageStamps() {
@@ -103,9 +103,9 @@ private final class FakeHTTP: HTTPClient {
     private func dir() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("needledrop-lyrics-\(UUID())") }
 
     @Test func exactGetWithAllFieldsAndUserAgent() async throws {
-        let http = FakeHTTP([("/get?", #"{"trackName":"Dreams","duration":258,"instrumental":false,"plainLyrics":"Now here","syncedLyrics":"[00:12.00]Now here you go again"}"#)])
+        let http = FakeHTTP([("/get?", #"{"trackName":"Dreams","duration":258,"instrumental":false,"plainLyrics":"Fold the","syncedLyrics":"[00:12.00]Fold the map along the river"}"#)])
         let lyrics = try #require(await LyricsProvider(cacheDirectory: dir(), http: http).lyrics(for: dreams()))
-        #expect(lyrics.lines == [LyricLine(time: 12, text: "Now here you go again")])
+        #expect(lyrics.lines == [LyricLine(time: 12, text: "Fold the map along the river")])
         let url = try #require(http.urls.first)
         #expect(url.contains("artist_name=Fleetwood%20Mac") && url.contains("album_name=Rumours") && url.contains("duration=258"))
         #expect(http.log.withLock { $0[0].1["User-Agent"]?.hasPrefix("Needledrop/") } == true)
@@ -114,16 +114,16 @@ private final class FakeHTTP: HTTPClient {
     @Test func anExactMatchWithoutTimingKeepsLooking() async throws {
         // LRCLIB's exact record for N95 has plain lyrics only; other uploads have them synced.
         let http = FakeHTTP([
-            ("/get?", #"{"trackName":"Dreams","duration":258,"instrumental":false,"plainLyrics":"Now here you go"}"#),
-            ("/search?", #"[{"trackName":"Dreams","artistName":"Fleetwood Mac","duration":258,"syncedLyrics":"[00:12.00]Now here you go again"}]"#),
+            ("/get?", #"{"trackName":"Dreams","duration":258,"instrumental":false,"plainLyrics":"Fold the map along"}"#),
+            ("/search?", #"[{"trackName":"Dreams","artistName":"Fleetwood Mac","duration":258,"syncedLyrics":"[00:12.00]Fold the map along the river"}]"#),
         ])
         let lyrics = try #require(await LyricsProvider(cacheDirectory: dir(), http: http).lyrics(for: dreams()))
         #expect(lyrics.isSynced)
         // Nothing synced anywhere: the plain text is still better than nothing.
-        let plainOnly = FakeHTTP([("/get?", #"{"trackName":"Dreams","duration":258,"plainLyrics":"Now here you go"}"#),
+        let plainOnly = FakeHTTP([("/get?", #"{"trackName":"Dreams","duration":258,"plainLyrics":"Fold the map along"}"#),
                                   ("/search?", "[]")])
         let fallback = try #require(await LyricsProvider(cacheDirectory: dir(), http: plainOnly).lyrics(for: dreams()))
-        #expect(!fallback.isSynced && fallback.plain == "Now here you go")
+        #expect(!fallback.isSynced && fallback.plain == "Fold the map along")
     }
 
     @Test func searchFallbackPrefersSyncedAndClosestDuration() async throws {

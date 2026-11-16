@@ -215,7 +215,7 @@ private func close(_ a: RGB, _ b: RGB, within tolerance: Float = 0.06) -> Bool {
                                                        lyric: lyric), frames: 90)
         }
         let plain = try frame(nil)
-        let printed = try frame(LyricFrame(id: 0, text: "Thunder only happens when it's raining"))
+        let printed = try frame(LyricFrame(id: 0, text: "Paper weather rolls in after midnight"))
         func changed(x: Range<Int>, y: Range<Int>) -> Int {
             var n = 0
             for row in y {

@@ -58,7 +58,7 @@ struct LightsSection: View {
         } header: {
             Text("Philips Hue")
         } footer: {
-            Text("Pairing: choose your bridge, click Pair, then press the round button on top of the bridge within 30 seconds. The key is kept in your keychain.")
+            Text("Pairing: choose your bridge, click Pair, then press the round button on top of the bridge within 30 seconds. The key is kept privately on this Mac.")
         }
     }
 
