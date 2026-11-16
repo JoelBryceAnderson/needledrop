@@ -1,4 +1,5 @@
 import AVFAudio
+import AVFoundation
 
 public struct CaptureFormat: Sendable, Hashable, Codable, CustomStringConvertible {
     public var sampleRate: Double
@@ -45,12 +46,28 @@ extension AudioRingBuffer {
 }
 
 public enum MicrophoneAccess {
-    /// Prompts on first use. Without access, AVAudioEngine delivers silence rather than failing.
+    /// What TCC says right now, for the log: "authorized", "denied", "restricted" or "not determined".
+    public static var statusDescription: String {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: "authorized"
+        case .denied: "denied"
+        case .restricted: "restricted"
+        case .notDetermined: "not determined"
+        @unknown default: "unknown"
+        }
+    }
+
+    public static var isGranted: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
+
+    /// Prompts on first use and waits for the answer. Without access, an input delivers
+    /// digital silence rather than failing, and keeps doing so after access is granted
+    /// until it's restarted, so callers restart capture once this turns true.
     public static func request() async -> Bool {
-        switch AVAudioApplication.shared.recordPermission {
-        case .granted: return true
-        case .denied: return false
-        default: return await AVAudioApplication.requestRecordPermission()
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: return true
+        case .denied, .restricted: return false
+        case .notDetermined: return await AVCaptureDevice.requestAccess(for: .audio)
+        @unknown default: return false
         }
     }
 }

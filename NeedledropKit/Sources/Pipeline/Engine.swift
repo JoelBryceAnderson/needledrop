@@ -86,7 +86,8 @@ public actor Engine {
         metadata: MetadataResolver?,
         lyrics: LyricsProvider? = nil,
         archiver: Archiver? = nil,
-        catalog: (any TrackCatalog)? = nil
+        catalog: (any TrackCatalog)? = nil,
+        extraObservers: [any AudioObserver] = []
     ) {
         let recognition = RecognitionController(recognizer: recognizer)
         self.recognition = recognition
@@ -96,7 +97,7 @@ public actor Engine {
         self.archiver = archiver
         (archiveEvents, archiveInbox) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
         machine = SessionMachine(config: session)
-        let pipeline = ListeningPipeline(config: detector, observers: [recognition] + (archiver.map { [$0.recorder] } ?? []))
+        let pipeline = ListeningPipeline(config: detector, observers: [recognition] + (archiver.map { [$0.recorder] } ?? []) + extraObservers)
         self.pipeline = pipeline
         recognition.setSink { [weak pipeline] in pipeline?.post(.recognition($0)) }
         (events, continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)

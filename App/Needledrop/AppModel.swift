@@ -75,6 +75,13 @@ final class AppModel {
     private(set) var devices: [AudioInputDevice] = []
     private(set) var log: [LogEntry] = []
     private(set) var microphoneDenied = false
+    /// Start/stop recording of whatever the input hears (vinyl podcasts, whole sides).
+    let manualRecording = ManualRecording()
+    private(set) var recordingStartedAt: Date?
+    private(set) var savingRecording = false
+    private(set) var lastRecording: URL?
+    /// What recognition was before it was switched off from the menu.
+    private var lastRecognitionChoice: RecognitionChoice?
     let presentation = PresentationController()
     /// Hue lights following the album colours and the beat.
     let lights = LightsController()
@@ -165,6 +172,9 @@ final class AppModel {
         for file in Archiver.recoverOrphans(root: settings.archive.root) {
             append("Recovered an interrupted side recording: Sides/\(file.lastPathComponent)")
         }
+        for file in ManualRecording.recoverOrphans(root: settings.archive.root) {
+            append("Recovered an interrupted recording: Recordings/\(file.lastPathComponent)")
+        }
         startRecoveryWatch()
         refreshDevices()
         await restartInput()
@@ -193,6 +203,9 @@ final class AppModel {
     }
 
     func restartInput() async {
+        // A recording only finishes while audio flows: stop it before an input that has none
+        // for the turntable (streamed audio isn't recorded).
+        if recordingStartedAt != nil, settings.input == .systemAudio { await stopRecording() }
         eventTask?.cancel()
         await engine.stop()
         metadata = nil
@@ -200,15 +213,28 @@ final class AppModel {
 
         let source: any AudioSource
         var recognizer: any TrackRecognizer = ShazamRecognizer()
+        var session = SessionConfig()
+        if settings.recognition == .off {
+            recognizer = NoRecognizer()
+        } else if usesAudD, let token = AudDTokenStore.load() {
+            recognizer = AudDRecognizer(token: token)
+            // A paid service: ask less often. Re-matches still come near each track's end
+            // (from its length), which is what catches the next song.
+            session.rematchInterval = 150
+            session.retryInterval = 6
+            session.unknownRetryInterval = 90
+        }
         var catalog: (any TrackCatalog)?
         switch settings.input {
         case .systemDefault, .device:
+            let before = MicrophoneAccess.statusDescription
             microphoneDenied = !(await MicrophoneAccess.request())
+            Self.systemLog.notice("Microphone access: \(before, privacy: .public) → \(MicrophoneAccess.statusDescription, privacy: .public)")
             if microphoneDenied { append("Microphone access denied — enable Needledrop in System Settings › Privacy & Security › Microphone") }
             if case .device(let uid, _) = settings.input {
-                source = LiveInputSource(deviceUID: uid)
+                source = LiveInputSource(deviceUID: uid, playsThrough: settings.passThrough)
             } else {
-                source = LiveInputSource(deviceUID: nil)
+                source = LiveInputSource(deviceUID: nil, playsThrough: settings.passThrough)
             }
         case .systemAudio:
             source = SystemAudioSource()
@@ -232,11 +258,12 @@ final class AppModel {
             }
         }
 
-        let engine = Engine(detector: settings.detector, recognizer: recognizer, metadata: metadataResolver,
+        let engine = Engine(detector: settings.detector, session: session, recognizer: recognizer, metadata: metadataResolver,
                             lyrics: lyricsProvider,
                             // The archive is for records you own: streamed audio isn't recorded.
                             archiver: settings.input == .systemAudio ? nil : Archiver(settings: settings.archive, library: library),
-                            catalog: catalog)
+                            catalog: catalog,
+                            extraObservers: [manualRecording.recorder])
         self.engine = engine
         eventTask = Task { [weak self] in
             for await event in engine.events {
@@ -252,6 +279,8 @@ final class AppModel {
 
     func setSampleRate(_ rate: Double) async {
         guard case .device(let uid, _) = settings.input else { return }
+        // A new rate means a new file format: save what's recorded so far first.
+        if recordingStartedAt != nil { await stopRecording() }
         do {
             try AudioDeviceCatalog.setNominalSampleRate(rate, deviceUID: uid)
             refreshDevices()
@@ -259,6 +288,44 @@ final class AppModel {
             append("Couldn't set sample rate: \(error)")
         }
         // The engine sees a configuration change and rebuilds itself at the new rate.
+    }
+
+    // MARK: - Manual recording
+
+    var isRecording: Bool { recordingStartedAt != nil }
+
+    func toggleRecording() async {
+        if isRecording { await stopRecording() } else { await startRecording() }
+    }
+
+    func startRecording() async {
+        guard !isRecording, !savingRecording else { return }
+        guard settings.input != .systemAudio else {
+            append("Recording is for the turntable: switch Listening to your audio interface first")
+            return
+        }
+        do {
+            try await manualRecording.start(root: settings.archive.root)
+            recordingStartedAt = await manualRecording.startedAt
+            append("● Recording")
+        } catch {
+            append("✖ Couldn't start recording: \(error.localizedDescription)")
+        }
+    }
+
+    func stopRecording() async {
+        guard isRecording else { return }
+        recordingStartedAt = nil
+        savingRecording = true
+        defer { savingRecording = false }
+        append("Saving recording…")
+        do {
+            let saved = try await manualRecording.stop(format: settings.archive.format, bitDepth: settings.archive.bitDepth)
+            lastRecording = saved.url
+            append("Saved recording: Recordings/\(saved.url.lastPathComponent) (\(formatDuration(saved.duration)))")
+        } catch {
+            append("✖ Recording: \(error)")
+        }
     }
 
     func updateDetector(_ config: SideDetectorConfig) {
@@ -342,7 +409,7 @@ final class AppModel {
             renderer?.scoreTimeline = nil
             if let track {
                 append("♫ \(track.artist) — \(track.title)")
-            } else if engine.session().unidentified {
+            } else if engine.session().unidentified, settings.recognition != .off {
                 append("Couldn't identify this record")
                 renderer?.show(.neutral)
             }
@@ -590,9 +657,47 @@ final class AppModel {
 
     var hasAPIKey: Bool { APIKeyStore.load() != nil }
 
+    // MARK: - Recognition service
+
+    var hasAudDToken: Bool { AudDTokenStore.load() != nil }
+
+    /// AudD names records when chosen, or on Auto once a token is saved.
+    var usesAudD: Bool {
+        switch settings.recognition {
+        case .audd: hasAudDToken
+        case .auto: hasAudDToken
+        case .shazam, .off: false
+        }
+    }
+
+    var recognitionOn: Bool { settings.recognition != .off }
+
+    /// The menu toggle: Off, or back to the choice before it (Auto if there wasn't one).
+    func setRecognitionOn(_ on: Bool) async {
+        guard on != recognitionOn else { return }
+        if on {
+            await setRecognition(lastRecognitionChoice ?? .auto)
+        } else {
+            lastRecognitionChoice = settings.recognition
+            await setRecognition(.off)
+        }
+    }
+
+    func saveAudDToken(_ token: String) async {
+        AudDTokenStore.save(token)
+        append(token.isEmpty ? "AudD token removed" : "AudD token saved — recognising with AudD")
+        await restartInput()
+    }
+
+    func setRecognition(_ choice: RecognitionChoice) async {
+        settings.recognition = choice
+        append(choice == .off ? "Recognition off: nothing is sent anywhere" : "Recognition on")
+        await restartInput()
+    }
+
     func saveAPIKey(_ key: String) {
         APIKeyStore.save(key.trimmingCharacters(in: .whitespacesAndNewlines))
-        append(key.isEmpty ? "API key removed" : "API key saved to the keychain")
+        append(key.isEmpty ? "API key removed" : "API key saved")
     }
 
     private func applyVisualSettings() {
@@ -638,6 +743,13 @@ final class AppModel {
     }
 
     private func checkForStall() {
+        // An input started without access stays silent after access is granted: restart it.
+        if microphoneDenied, MicrophoneAccess.isGranted {
+            microphoneDenied = false
+            append("Microphone access granted: restarting input")
+            Task { await restartInput() }
+            return
+        }
         let snapshot = pipeline.snapshot()
         var running = false
         if case .running = snapshot.sourceStatus { running = true }
@@ -647,33 +759,8 @@ final class AppModel {
             Task { await restartInput() }
             return
         }
-        // Perfect digital silence from an interface or microphone: real hardware always has a
-        // little noise, so this is macOS handing over silence (an input opened while the
-        // microphone permission was still being settled). Reopen it; say so if it persists.
-        var hardware = false
-        switch settings.input {
-        case .device, .systemDefault: hardware = true
-        default: break
-        }
-        guard hardware, running, snapshot.peakHoldDB <= -119 else {
-            digitalSilenceSince = nil
-            return
-        }
-        let since = digitalSilenceSince ?? now
-        digitalSilenceSince = since
-        guard now - since >= 4 else { return }
-        digitalSilenceSince = nil
-        silenceRestarts += 1
-        if silenceRestarts == 1 {
-            append("Only digital silence from \(snapshot.sourceName ?? "the input"): reopening it")
-            Task { await restartInput() }
-        } else if silenceRestarts == 2 || silenceRestarts % 10 == 0 {
-            append("Still only silence from \(snapshot.sourceName ?? "the input"). Check System Settings › Privacy & Security › Microphone, then quit and reopen Needledrop")
-        }
     }
 
-    private var digitalSilenceSince: Double?
-    private var silenceRestarts = 0
 
     private func keepDisplayAwake(_ awake: Bool) {
         if awake, displayAwake == nil {

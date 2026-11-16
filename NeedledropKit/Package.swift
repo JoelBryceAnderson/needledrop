@@ -7,7 +7,7 @@ let package = Package(
     products: [
         .library(
             name: "NeedledropKit",
-            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics", "Archive", "ArtDirector", "Lights"]
+            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics", "Archive", "ArtDirector", "Lights", "Secrets"]
         ),
         .executable(name: "needledrop-replay", targets: ["needledrop-replay"]),
     ],
@@ -21,7 +21,8 @@ let package = Package(
         // FFT, band energies, RMS, onsets, tempo. Pure DSP — no AVFoundation.
         .target(name: "SignalAnalysis"),
         // ShazamKit (and scripted) recognition, playback clock.
-        .target(name: "Recognition", dependencies: ["AudioCapture"]),
+        .target(name: "Secrets"),
+        .target(name: "Recognition", dependencies: ["AudioCapture", "Secrets"]),
         // Album/track info and artwork from the iTunes API, cached on disk.
         .target(name: "Metadata", dependencies: ["Recognition"]),
         // Time-synced lyrics from LRCLIB, LRC parsing.
@@ -36,9 +37,9 @@ let package = Package(
         // Metal renderer, palettes, scene transitions. Shaders compile at runtime from source.
         .target(name: "Visuals", dependencies: ["SignalAnalysis"]),
         // Claude as art director: style specs and custom shaders per album.
-        .target(name: "ArtDirector", dependencies: ["Visuals"]),
+        .target(name: "ArtDirector", dependencies: ["Visuals", "Secrets"]),
         // Philips Hue: discovery, pairing, colour following and beat pulses (REST + entertainment streaming).
-        .target(name: "Lights", dependencies: ["Visuals", "SignalAnalysis"]),
+        .target(name: "Lights", dependencies: ["Visuals", "SignalAnalysis", "Secrets"]),
         // Wires capture → analysis → session → recognition → metadata, live or offline.
         .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Archive"]),
         // Feed recorded/synthetic audio through the pipeline as if it were live.

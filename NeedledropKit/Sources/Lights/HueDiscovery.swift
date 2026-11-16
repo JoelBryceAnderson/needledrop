@@ -1,6 +1,6 @@
 import Foundation
 import Network
-import Security
+import Secrets
 
 /// Finds bridges: Signify's discovery service (needs the internet) and Bonjour
 /// (`_hue._tcp` on the local network) at the same time, merged by bridge id.
@@ -112,32 +112,18 @@ public enum HueDiscovery {
     }
 }
 
-/// Pairings, in the keychain: one item per bridge, holding its app and client keys.
+/// Pairings, one file per bridge holding its app and client keys, readable only by this
+/// user (see `SecretStore`).
 public enum HueKeyStore {
-    static let service = "com.needledrop.Needledrop.hue"
+    static func name(_ bridgeID: String) -> String { "hue-\(bridgeID.lowercased())" }
 
     public static func load(bridgeID: String) -> HueCredentials? {
-        var query = baseQuery(bridgeID)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return try? JSONDecoder().decode(HueCredentials.self, from: data)
+        SecretStore.load(name(bridgeID)).flatMap { try? JSONDecoder().decode(HueCredentials.self, from: $0) }
     }
 
     /// Saves (or, with nil, deletes) a bridge's keys.
     @discardableResult
     public static func save(_ credentials: HueCredentials?, bridgeID: String) -> Bool {
-        SecItemDelete(baseQuery(bridgeID) as CFDictionary)
-        guard let credentials, let data = try? JSONEncoder().encode(credentials) else { return true }
-        var item = baseQuery(bridgeID)
-        item[kSecValueData as String] = data
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
-    }
-
-    private static func baseQuery(_ bridgeID: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-         kSecAttrAccount as String: bridgeID.lowercased()]
+        SecretStore.save(name(bridgeID), credentials.flatMap { try? JSONEncoder().encode($0) })
     }
 }

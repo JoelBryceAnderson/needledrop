@@ -14,6 +14,9 @@ enum CoverChoice: String, Codable, CaseIterable { case auto, living, dissolve, r
 enum LyricAnimationChoice: String, Codable, CaseIterable { case auto, ink, typewriter }
 enum RPMChoice: String, Codable, CaseIterable { case auto, rpm33, rpm45 }
 enum IdleScreen: String, Codable, CaseIterable { case libraryWall, black }
+/// Which service names records. Auto: AudD when a token is saved (Shazam needs an approved,
+/// signed build), else Shazam.
+enum RecognitionChoice: String, Codable, CaseIterable { case auto, shazam, audd, off }
 /// How much the picture is directed over a song (shots, camera moves, the cover moving).
 enum MotionChoice: String, Codable, CaseIterable {
     case still, gentle, directed
@@ -71,8 +74,12 @@ struct AppSettings: Codable, Equatable {
     var motion: MotionChoice = .directed
     /// Replays play through the Mac's speakers too (never the turntable path).
     var replayAudible = true
+    /// Play the turntable input out of this Mac's output (when the interface takes the
+    /// turntable's only output). Off by default: with a microphone it would feed back.
+    var passThrough = false
     /// Take what's playing from Apple Music / Spotify when they're the source.
     var followMusicApps = true
+    var recognition: RecognitionChoice = .auto
     var setupCompleted = false
     var renderResolution: VisualsRenderer.RenderResolution = .auto
     var artDirector = ArtDirectorSettings()
@@ -105,7 +112,9 @@ struct AppSettings: Codable, Equatable {
         idleScreen = (try? c.decodeIfPresent(IdleScreen.self, forKey: .idleScreen)) ?? d.idleScreen
         motion = (try? c.decodeIfPresent(MotionChoice.self, forKey: .motion)) ?? d.motion
         replayAudible = try c.decodeIfPresent(Bool.self, forKey: .replayAudible) ?? d.replayAudible
+        passThrough = try c.decodeIfPresent(Bool.self, forKey: .passThrough) ?? d.passThrough
         followMusicApps = try c.decodeIfPresent(Bool.self, forKey: .followMusicApps) ?? d.followMusicApps
+        recognition = (try? c.decodeIfPresent(RecognitionChoice.self, forKey: .recognition)) ?? d.recognition
         setupCompleted = try c.decodeIfPresent(Bool.self, forKey: .setupCompleted) ?? d.setupCompleted
         renderResolution = (try? c.decodeIfPresent(VisualsRenderer.RenderResolution.self, forKey: .renderResolution)) ?? d.renderResolution
         artDirector = (try? c.decodeIfPresent(ArtDirectorSettings.self, forKey: .artDirector)) ?? d.artDirector
