@@ -2,7 +2,7 @@ KIT := NeedledropKit
 REPLAY := swift run --package-path $(KIT) -c release needledrop-replay
 FIXTURE := Fixtures/synthetic-side.wav
 
-.PHONY: test project app run synth analyze play devices listen
+.PHONY: test project app run app-signed run-signed synth analyze play devices listen
 
 test:            ## Unit + replay integration tests
 	swift test --package-path $(KIT)
@@ -15,6 +15,13 @@ app: project     ## Build the app (ad-hoc signed)
 		-derivedDataPath .build/xcode CODE_SIGN_IDENTITY=- build | grep -E "error:|BUILD"
 
 run: app
+	open .build/xcode/Build/Products/Debug/Needledrop.app
+
+app-signed: project  ## Build signed with the team in project.yml (needed for ShazamKit)
+	xcodebuild -project Needledrop.xcodeproj -scheme Needledrop -configuration Debug \
+		-derivedDataPath .build/xcode -allowProvisioningUpdates build | grep -E "error:|BUILD"
+
+run-signed: app-signed
 	open .build/xcode/Build/Products/Debug/Needledrop.app
 
 synth:           ## Write a synthetic side with known ground truth

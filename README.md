@@ -120,7 +120,7 @@ Recognition from real records needs a signed build with ShazamKit enabled:
 
 1. Change `bundleIdPrefix` / `PRODUCT_BUNDLE_IDENTIFIER` in `project.yml` to something you own, and set `DEVELOPMENT_TEAM`.
 2. In the Apple Developer portal, go to Identifiers, open that App ID, and enable **ShazamKit** under App Services.
-3. Run `make project` and build from Xcode.
+3. Run `make run-signed` (or `make project` and build from Xcode). `make app` signs ad-hoc, so Shazam fails there.
 
 Without this the app still runs, but every match attempt fails, and the overlay log shows
 the ShazamKit error. Ad-hoc builds also re-prompt for microphone access after each rebuild.

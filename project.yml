@@ -1,7 +1,7 @@
 # Generate Needledrop.xcodeproj with `xcodegen generate` (or `make project`).
 name: Needledrop
 options:
-  bundleIdPrefix: com.needledrop
+  bundleIdPrefix: com.joelanderson
   deploymentTarget:
     macOS: "15.0"
   createIntermediateGroups: true
@@ -37,12 +37,13 @@ targets:
         com.apple.security.automation.apple-events: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.needledrop.Needledrop
+        PRODUCT_BUNDLE_IDENTIFIER: com.joelanderson.needledrop
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: "6.0"
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
-        # Set your team so mic permission survives rebuilds (and for ShazamKit in M2).
-        DEVELOPMENT_TEAM: ""
+        # Signed with this team so ShazamKit works (its App Service is on for this App ID)
+        # and mic permission survives rebuilds. Fork it? Use your own bundle ID and team.
+        DEVELOPMENT_TEAM: HUW382N6S6
         GENERATE_INFOPLIST_FILE: NO

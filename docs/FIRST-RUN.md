@@ -21,7 +21,7 @@ Recognition from the record itself needs a signed build with ShazamKit:
 
 1. In `project.yml`, change the bundle ID to one you own and set `DEVELOPMENT_TEAM`.
 2. developer.apple.com › Identifiers › your App ID › App Services › **ShazamKit**.
-3. Run `make project`, then build and run from Xcode.
+3. Run `make run-signed` (or `make project`, then build and run from Xcode).
 
 Without this the app still works: visuals react to the music, and you can name tracks
 (**What's Playing…**, ⌘K) or let Apple Music or Spotify say what's playing. Records just
