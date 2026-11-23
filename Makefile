@@ -10,14 +10,20 @@ test:            ## Unit + replay integration tests
 project:         ## Regenerate Needledrop.xcodeproj from project.yml
 	xcodegen generate
 
-app: project     ## Build the app (ad-hoc signed)
+HELPER := -scheme NeedledropHome -destination 'platform=macOS,variant=Mac Catalyst'
+
+app: project     ## Build the app (ad-hoc signed; HomeKit lights need app-signed)
+	xcodebuild -project Needledrop.xcodeproj $(HELPER) -configuration Debug \
+		-derivedDataPath .build/xcode CODE_SIGN_IDENTITY=- HOME_SIGNING=NO build | grep -E "error:|BUILD"
 	xcodebuild -project Needledrop.xcodeproj -scheme Needledrop -configuration Debug \
 		-derivedDataPath .build/xcode CODE_SIGN_IDENTITY=- build | grep -E "error:|BUILD"
 
 run: app
 	open .build/xcode/Build/Products/Debug/Needledrop.app
 
-app-signed: project  ## Build signed with the team in project.yml (needed for ShazamKit)
+app-signed: project  ## Build signed with the team in project.yml (needed for ShazamKit and HomeKit)
+	xcodebuild -project Needledrop.xcodeproj $(HELPER) -configuration Debug \
+		-derivedDataPath .build/xcode -allowProvisioningUpdates build | grep -E "error:|BUILD"
 	xcodebuild -project Needledrop.xcodeproj -scheme Needledrop -configuration Debug \
 		-derivedDataPath .build/xcode -allowProvisioningUpdates build | grep -E "error:|BUILD"
 

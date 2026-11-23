@@ -40,5 +40,9 @@ jobs:
         run: |
           brew install xcodegen
           xcodegen generate
+          # The HomeKit helper (Mac Catalyst) first: the app's build copies it in.
+          xcodebuild -project Needledrop.xcodeproj -scheme NeedledropHome -configuration Debug \
+            -destination 'platform=macOS,variant=Mac Catalyst' \
+            -derivedDataPath .build/xcode CODE_SIGNING_ALLOWED=NO build
           xcodebuild -project Needledrop.xcodeproj -scheme Needledrop -configuration Debug \
             -derivedDataPath .build/xcode CODE_SIGNING_ALLOWED=NO build

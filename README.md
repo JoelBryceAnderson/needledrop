@@ -36,6 +36,7 @@ needledrop/
 ├── project.yml              xcodegen spec → Needledrop.xcodeproj (generated, not committed)
 ├── Makefile                 test / app / synth / analyze / play / listen
 ├── App/Needledrop/          SwiftUI shell: menu bar item, settings, full-screen visuals window
+├── App/NeedledropHome/      Windowless Mac Catalyst helper that talks to HomeKit for the app
 ├── NeedledropKit/           Swift package with the engine, one target per module
 │   ├── Sources/
 │   │   ├── AudioCapture/    device catalog (CoreAudio), AVAudioEngine input, lock-free SPSC ring buffer
@@ -46,7 +47,8 @@ needledrop/
 │   │   ├── Archive/         side recorder, track splitter, ALAC/FLAC encoder + tags, GRDB library
 │   │   ├── Lyrics/          LRC parser, LRCLIB provider with disk cache
 │   │   ├── Visuals/         Metal renderer (runtime-compiled MSL), palettes, audio drive, scene director
-│   │   ├── Lights/          Philips Hue: discovery, link-button pairing, CLIP v2 REST, entertainment streaming (DTLS)
+│   │   ├── Lights/          Philips Hue (discovery, link-button pairing, CLIP v2 REST, entertainment streaming) and Apple Home (via the helper)
+│   │   ├── HomeLink/        Messages between the app and its HomeKit helper (Foundation only)
 │   │   ├── SessionState/    side detector + session machine (idle → listening → recognizing → playing ⇄ betweenTracks → sideEnded)
 │   │   ├── Pipeline/        AnalysisCore, ListeningPipeline (thread, snapshot, events), Engine (actor that runs it all)
 │   │   ├── ReplayHarness/   file replay source, offline runner, synthetic sides, track sidecars, side report
@@ -124,3 +126,12 @@ Recognition from real records needs a signed build with ShazamKit enabled:
 
 Without this the app still runs, but every match attempt fails, and the overlay log shows
 the ShazamKit error. Ad-hoc builds also re-prompt for microphone access after each rebuild.
+
+### Apple Home lights
+
+Settings › Lights › Apple Home drives any colour light in the Home app. HomeKit is only open to
+Catalyst apps, so a small helper, `NeedledropHome` (bundle ID `….needledrop.home`), does the HomeKit
+part. It needs the signed build too: `make app-signed` builds it with the HomeKit capability, and
+with automatic signing Xcode turns that capability on for the helper's App ID. The first time it
+runs, macOS asks whether Needledrop Home can use your Home data. In ad-hoc builds (`make app`) the
+helper has no HomeKit, and Settings says so.

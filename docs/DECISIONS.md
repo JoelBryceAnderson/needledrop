@@ -302,7 +302,7 @@ Paper keeps its creases. The background holds still while a line is up, so a cal
 
 **Lyrics on busy grounds get a soft halo** in the opposite tone, as a backstop.
 
-## Lights (Philips Hue)
+## Lights (Philips Hue and Apple Home)
 
 **Talk to the bridge directly, no SDK.** Discovery uses Signify's cloud endpoint and Bonjour
 (`_hue._tcp`) together. Pairing is the link button (`POST /api` with `generateclientkey`), and the
@@ -326,12 +326,22 @@ REST updates instead. REST stays within the bridge's limits: 10 light commands a
 lights sharing that in turn, and 1 a second for a room or zone. Rooms and zones only change colour.
 Unchanged states aren't resent, and each command fades over the gap until the next.
 
-**HomeKit: a follow-up, not built.** `HMHomeManager` would cover non-Hue lights for colour
-following (it's too slow for pulses). It needs the HomeKit entitlement, which needs a provisioning
-profile from a development team. The app builds with ad-hoc signing and an empty
-`DEVELOPMENT_TEAM`, so the entitlement would stop `make app` and CI from building. Do it once
-there's a team. It would be another `LightOutput` (colour only, about 1 update a second) beside
-the REST one.
+**Apple Home through a Catalyst helper.** `HMHomeManager` is Mac Catalyst only (the macOS SDK marks
+it unavailable to native apps), so `NeedledropHome`, a windowless Catalyst app (no Dock icon, a
+scene with no window), holds the HomeKit entitlement and permission. Needledrop listens on a Unix
+socket in its temp directory, launches the helper with the path, and the two exchange
+newline-delimited JSON (`HomeLink`, a Foundation-only package target both build). The helper sends
+the colour lights (lightbulb services with hue and saturation) and rooms, and resends them when Home
+changes. It quits when the link closes. Colour only, at 2 updates a second: HomeKit has no fade time
+and needs a write per characteristic, so faster only queues. The helper writes only the
+characteristics that changed, and while it's writing it keeps only the newest command.
+
+Xcode won't build a Catalyst app as a dependency of a Mac app (it builds the iOS variant and refuses
+to embed it), so the helper is built on its own scheme first and a script phase copies it into
+`Contents/Library/Helpers` before the app is signed. A Catalyst app needs a development certificate,
+so `make app` and CI build the helper unsigned (`HOME_SIGNING=NO`) and the script signs it ad-hoc
+without HomeKit. Needledrop checks the helper's signature for the HomeKit entitlement and says to
+use `make run-signed` instead of launching a helper that can't work.
 
 ## Recommendations for the open questions
 

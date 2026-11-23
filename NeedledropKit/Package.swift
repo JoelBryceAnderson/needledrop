@@ -3,12 +3,15 @@ import PackageDescription
 
 let package = Package(
     name: "NeedledropKit",
-    platforms: [.macOS(.v15)],
+    // iOS / Mac Catalyst only for HomeLink, which the Catalyst HomeKit helper links.
+    platforms: [.macOS(.v15), .iOS(.v18), .macCatalyst(.v18)],
     products: [
         .library(
             name: "NeedledropKit",
-            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics", "Archive", "ArtDirector", "Lights", "Secrets"]
+            targets: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "SessionState", "Pipeline", "ReplayHarness", "Visuals", "Lyrics", "Archive", "ArtDirector", "Lights", "HomeLink", "Secrets"]
         ),
+        // What the app and its HomeKit helper (a Catalyst app) say to each other.
+        .library(name: "HomeLink", targets: ["HomeLink"]),
         .executable(name: "needledrop-replay", targets: ["needledrop-replay"]),
     ],
     dependencies: [
@@ -38,8 +41,11 @@ let package = Package(
         .target(name: "Visuals", dependencies: ["SignalAnalysis"]),
         // Claude as art director: style specs and custom shaders per album.
         .target(name: "ArtDirector", dependencies: ["Visuals", "Secrets"]),
-        // Philips Hue: discovery, pairing, colour following and beat pulses (REST + entertainment streaming).
-        .target(name: "Lights", dependencies: ["Visuals", "SignalAnalysis", "Secrets"]),
+        // Messages between the app and the HomeKit helper. Foundation only: it also builds for Catalyst.
+        .target(name: "HomeLink"),
+        // Philips Hue (discovery, pairing, REST + entertainment streaming) and HomeKit (via the helper):
+        // colour following and beat pulses.
+        .target(name: "Lights", dependencies: ["Visuals", "SignalAnalysis", "Secrets", "HomeLink"]),
         // Wires capture → analysis → session → recognition → metadata, live or offline.
         .target(name: "Pipeline", dependencies: ["AudioCapture", "SignalAnalysis", "Recognition", "Metadata", "Lyrics", "SessionState", "Archive"]),
         // Feed recorded/synthetic audio through the pipeline as if it were live.
@@ -55,7 +61,7 @@ let package = Package(
         .testTarget(name: "ArchiveTests", dependencies: ["Archive", "Recognition", "Metadata", "ReplayHarness"]),
         .testTarget(name: "ArtDirectorTests", dependencies: ["ArtDirector", "Visuals"]),
         .testTarget(name: "MetadataTests", dependencies: ["Metadata", "Recognition"]),
-        .testTarget(name: "LightsTests", dependencies: ["Lights", "Visuals", "SignalAnalysis"]),
+        .testTarget(name: "LightsTests", dependencies: ["Lights", "HomeLink", "Visuals", "SignalAnalysis"]),
         .testTarget(name: "PipelineTests", dependencies: ["Pipeline", "ReplayHarness", "SessionState", "AudioCapture", "Recognition", "Metadata", "Archive"]),
     ]
 )
