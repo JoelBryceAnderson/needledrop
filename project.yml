@@ -28,6 +28,30 @@ targets:
         NSBonjourServices:
           - _hue._tcp
         NSAudioCaptureUsageDescription: Needledrop can listen to what this Mac is playing (a browser, a music app) to drive the visuals when the turntable isn't in use.
+    # The HomeKit helper is a Catalyst app, which Xcode won't build as a dependency of a Mac
+    # app, so it's built on its own first (`make app` does both) and copied in here, before
+    # the app is signed.
+    postBuildScripts:
+      - name: Embed HomeKit helper
+        # Declared so the app's signing step depends on the copy and re-seals after it.
+        inputFiles:
+          - $(BUILD_DIR)/$(CONFIGURATION)-maccatalyst/NeedledropHome.app
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Library/Helpers/NeedledropHome.app
+        script: |
+          helper="${BUILD_DIR}/${CONFIGURATION}-maccatalyst/NeedledropHome.app"
+          dest="${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/Library/Helpers"
+          if [ ! -d "$helper" ]; then
+            echo "warning: NeedledropHome.app isn't built, so HomeKit lights won't work. Build with make app (or the NeedledropHome scheme for Mac Catalyst) first."
+            exit 0
+          fi
+          mkdir -p "$dest"
+          rm -rf "$dest/NeedledropHome.app"
+          ditto "$helper" "$dest/NeedledropHome.app"
+          # Unsigned (make app): sign it ad-hoc so the app's own signature can seal it.
+          if [ "${CODE_SIGNING_ALLOWED}" = "YES" ] && ! codesign -v "$dest/NeedledropHome.app" 2>/dev/null; then
+            codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" "$dest/NeedledropHome.app"
+          fi
     entitlements:
       path: App/Needledrop/Needledrop.entitlements
       properties:
@@ -47,3 +71,52 @@ targets:
         # and mic permission survives rebuilds. Fork it? Use your own bundle ID and team.
         DEVELOPMENT_TEAM: HUW382N6S6
         GENERATE_INFOPLIST_FILE: NO
+
+  # HomeKit helper: HMHomeManager is Mac Catalyst only, so this windowless Catalyst app holds
+  # the HomeKit permission and takes colours from Needledrop over a Unix socket.
+  NeedledropHome:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - App/NeedledropHome
+    dependencies:
+      - package: NeedledropKit
+        product: HomeLink
+    info:
+      path: App/NeedledropHome/Info.plist
+      properties:
+        CFBundleDisplayName: Needledrop Home
+        # No Dock icon or menu bar: Needledrop starts and stops it.
+        LSUIElement: true
+        NSHomeKitUsageDescription: Needledrop sets your Apple Home lights to the colours of the album playing.
+        # UIKit requires the scene lifecycle; the one scene never gets a window.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: $(PRODUCT_MODULE_NAME).SceneDelegate
+    entitlements:
+      path: App/NeedledropHome/NeedledropHome.entitlements
+      properties:
+        com.apple.developer.homekit: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.joelanderson.needledrop.home
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        SUPPORTS_MACCATALYST: YES
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
+        TARGETED_DEVICE_FAMILY: "2,6"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: HUW382N6S6
+        GENERATE_INFOPLIST_FILE: NO
+        # A Catalyst app (and HomeKit) needs a development certificate. `make app` builds
+        # without one: it passes HOME_SIGNING=NO, and the helper is ad-hoc signed as it's
+        # copied into the app, without HomeKit (Settings says to use `make run-signed`).
+        HOME_SIGNING: YES
+        CODE_SIGNING_ALLOWED: $(HOME_SIGNING)

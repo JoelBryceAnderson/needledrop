@@ -1,8 +1,8 @@
 import Lights
 import SwiftUI
 
-/// Settings › Lights: find and pair a Hue Bridge, pick a light or entertainment area,
-/// and set how bright and how much it pulses.
+/// Settings › Lights: Philips Hue (find and pair a bridge, pick a light or entertainment
+/// area) or Apple Home (pick a colour light or room), and how bright and how much it pulses.
 struct LightsSection: View {
     @Bindable var model: AppModel
     @State private var selectedBridge: HueBridge?
@@ -12,10 +12,72 @@ struct LightsSection: View {
     private var lights: LightsController { model.lights }
 
     var body: some View {
-        bridgeSection
-        if lights.paired {
-            followSection
+        Section {
+            Picker("Lights", selection: $model.settings.lights.provider) {
+                ForEach(LightsProvider.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
         }
+        switch model.settings.lights.provider {
+        case .hue:
+            bridgeSection
+            if lights.paired {
+                followSection
+            }
+        case .homeKit:
+            homeSection
+        }
+    }
+
+    private var homeSection: some View {
+        Section {
+            Toggle("Lights follow the music", isOn: $model.settings.lights.enabled)
+                .disabled(lights.homeAuthorization != .authorized)
+            Picker("Light", selection: $model.settings.lights.homeTarget) {
+                Text(lights.homeLights.isEmpty ? "None found" : "Choose…").tag(HomeTarget?.none)
+                if !lights.homeRooms.isEmpty {
+                    Section("Rooms (every colour light in it)") {
+                        ForEach(lights.homeRooms) { room in
+                            let target = HomeTarget.room(id: room.id, name: room.name)
+                            Text(Self.label(room.name, count: room.lights.count)).tag(HomeTarget?.some(target))
+                        }
+                    }
+                }
+                if !lights.homeLights.isEmpty {
+                    Section("Lights") {
+                        ForEach(lights.homeLights) { light in
+                            let target = HomeTarget.light(id: light.id, name: light.name)
+                            Text(light.room.map { "\(light.name) (\($0))" } ?? light.name).tag(HomeTarget?.some(target))
+                        }
+                    }
+                }
+                if let target = model.settings.lights.homeTarget, !isListed(target) {
+                    Text(target.name).tag(HomeTarget?.some(target))
+                }
+            }
+            HStack {
+                Text("Brightness")
+                Slider(value: $model.settings.lights.brightness, in: 0.05...1)
+                Text("\(Int(model.settings.lights.brightness * 100)) %").monospacedDigit().frame(width: 48, alignment: .trailing)
+            }
+            Button("Refresh Lights") { lights.refreshHome() }
+            Text(lights.status).foregroundStyle(.secondary)
+        } header: {
+            Text("Apple Home")
+        } footer: {
+            Text("Any colour light in the Home app works, however it connects. The lights take the paper colour of the album on screen, warm toward its accent when the music lifts, and fade between albums. HomeKit is too slow for beat pulses, so they change colour about twice a second. A small helper, Needledrop Home, talks to HomeKit and asks for access to your Home data once.")
+        }
+    }
+
+    private func isListed(_ target: HomeTarget) -> Bool {
+        switch target {
+        case .light(let id, _): lights.homeLights.contains { $0.id == id }
+        case .room(let id, _): lights.homeRooms.contains { $0.id == id }
+        }
+    }
+
+    private static func label(_ name: String, count: Int) -> String {
+        "\(name) (\(count) light\(count == 1 ? "" : "s"))"
     }
 
     private var bridgeSection: some View {

@@ -1,16 +1,32 @@
+import AppKit
 import Foundation
+import HomeLink
 import Lights
 import Observation
 import QuartzCore
 import SessionState
 import Visuals
 
-/// The Lights settings: which bridge, which light or area, and how much it moves.
-/// Keys live in `HueKeyStore` (private files), not here.
+/// Which lights Needledrop drives.
+enum LightsProvider: String, Codable, CaseIterable {
+    case hue, homeKit
+
+    var label: String {
+        switch self {
+        case .hue: "Philips Hue"
+        case .homeKit: "Apple Home"
+        }
+    }
+}
+
+/// The Lights settings: Hue (which bridge, which light or area) or Apple Home (which light
+/// or room), and how much it moves. Hue keys live in `HueKeyStore` (private files), not here.
 struct LightsSettings: Codable, Equatable {
     var enabled = false
+    var provider = LightsProvider.hue
     var bridge: HueBridge?
     var target: LightTarget?
+    var homeTarget: HomeTarget?
     /// 0…1 of the lights' full output, at rest.
     var brightness = 0.7
     /// 0…1: how deep beat pulses go (the Motion setting scales it; Still turns them off).
@@ -22,6 +38,8 @@ struct LightsSettings: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = LightsSettings()
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        provider = (try? c.decodeIfPresent(LightsProvider.self, forKey: .provider)) ?? d.provider
+        homeTarget = try? c.decodeIfPresent(HomeTarget.self, forKey: .homeTarget)
         bridge = try? c.decodeIfPresent(HueBridge.self, forKey: .bridge)
         target = try? c.decodeIfPresent(LightTarget.self, forKey: .target)
         brightness = try c.decodeIfPresent(Double.self, forKey: .brightness) ?? d.brightness
@@ -29,9 +47,10 @@ struct LightsSettings: Codable, Equatable {
     }
 }
 
-/// Drives the user's Hue lights from what's on screen: the album look's colours and the
+/// Drives the user's lights from what's on screen: the album look's colours and the
 /// (latency-delayed) beat. Reads the model ~30 times a second; the output decides how
-/// much of that it can send (streaming at 50 Hz, REST at the bridge's limits).
+/// much of that it can send (Hue streaming at 50 Hz, Hue REST at the bridge's limits,
+/// Apple Home through the NeedledropHome helper at 2 a second).
 @MainActor
 @Observable
 final class LightsController {
@@ -42,6 +61,12 @@ final class LightsController {
     private(set) var loadingResources = false
     /// What the lights are doing, for Settings.
     private(set) var status = "Off"
+    /// Apple Home, as the helper last reported it (nil until it has).
+    private(set) var homeAuthorization: HomeAuthorization?
+    private(set) var homeLights: [HomeLight] = []
+    private(set) var homeRooms: [HomeRoom] = []
+    /// The helper's state in words, shown while nothing is following.
+    private(set) var homeStatus = "Starting…"
 
     @ObservationIgnored private weak var model: AppModel?
     @ObservationIgnored private var timer: Timer?
@@ -51,10 +76,14 @@ final class LightsController {
     @ObservationIgnored private var connectedFor: Connection?
     @ObservationIgnored private var connecting = false
     @ObservationIgnored private var client: HueClient?
+    @ObservationIgnored private var home: HomeLinkServer?
+    /// When the helper link may be tried again after it failed.
+    @ObservationIgnored private var homeRetry = Date.distantPast
 
-    private struct Connection: Equatable {
-        var bridge: HueBridge
-        var target: LightTarget
+    private enum Connection: Equatable {
+        case hue(bridge: HueBridge, target: LightTarget)
+        /// With the lights it means now, so a room gaining a light reconnects.
+        case home(target: HomeTarget, lights: [String])
     }
 
     func start(model: AppModel) {
@@ -76,10 +105,24 @@ final class LightsController {
     private func tick() {
         guard let model else { return }
         let settings = model.settings.lights
-        let wanted: Connection? = if settings.enabled, let bridge = settings.bridge, let target = settings.target {
-            Connection(bridge: bridge, target: target)
-        } else {
-            nil
+        if settings.provider == .homeKit {
+            if home == nil, Date() >= homeRetry { startHome() }
+        } else if home != nil {
+            stopHome()
+        }
+        let wanted: Connection? = switch settings.provider {
+        case .hue:
+            if settings.enabled, let bridge = settings.bridge, let target = settings.target {
+                .hue(bridge: bridge, target: target)
+            } else {
+                nil
+            }
+        case .homeKit:
+            if settings.enabled, let target = settings.homeTarget, homeAuthorization == .authorized, home != nil {
+                .home(target: target, lights: target.lights(in: homeRooms))
+            } else {
+                nil
+            }
         }
         if wanted != connectedFor, !connecting {
             Task { await reconnect(to: wanted) }
@@ -103,18 +146,34 @@ final class LightsController {
         if let output { await output.close() }
         output = nil
         connectedFor = connection
-        guard let connection else {
-            status = "Off"
-            return
+        let onError: @Sendable (Error) -> Void = { [weak self] error in
+            Task { @MainActor in self?.failed(error) }
         }
+        switch connection {
+        case nil:
+            status = model?.settings.lights.provider == .homeKit ? homeStatus : "Off"
+        case .hue(let bridge, let target):
+            await connectHue(bridge: bridge, target: target, onError: onError)
+        case .home(let target, let lights):
+            guard let home else { return }
+            if lights.isEmpty {
+                status = "“\(target.name)” has no colour lights in Apple Home now."
+            } else {
+                output = HomeLightOutput(sink: home, lights: lights)
+                let count = lights.count == 1 ? "" : " (\(lights.count) lights)"
+                status = "Following the album on “\(target.name)”\(count). Apple Home lights change colour about twice a second, without pulses."
+            }
+        }
+        show = LightShow()
+    }
+
+    private func connectHue(bridge: HueBridge, target: LightTarget, onError: @escaping @Sendable (Error) -> Void) async {
+        let connection = (bridge: bridge, target: target)
         guard let credentials = HueKeyStore.load(bridgeID: connection.bridge.id) else {
             status = "Not paired with this bridge"
             return
         }
         let client = client(for: connection.bridge, credentials: credentials)
-        let onError: @Sendable (Error) -> Void = { [weak self] error in
-            Task { @MainActor in self?.failed(error) }
-        }
         switch connection.target {
         case .light(let id, let name):
             let gamut = resources.first { $0.target == connection.target }?.gamut ?? .c
@@ -141,7 +200,6 @@ final class LightsController {
                 status = "Couldn't stream to “\(name)” (\(error)). Using slower updates instead."
             }
         }
-        show = LightShow()
     }
 
     private func failed(_ error: Error) {
@@ -162,6 +220,118 @@ final class LightsController {
         let made = HueClient(bridge: bridge, credentials: credentials)
         client = made
         return made
+    }
+
+    // MARK: - Apple Home (through the NeedledropHome helper)
+
+    private static var helperURL: URL {
+        Bundle.main.bundleURL.appending(path: "Contents/Library/Helpers/NeedledropHome.app")
+    }
+
+    /// Starts listening and launches the helper, which connects and sends the catalog.
+    private func startHome() {
+        let url = Self.helperURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            homeUnavailable("This build doesn't include the HomeKit helper. Build with make app-signed.", retry: false)
+            return
+        }
+        guard Self.hasHomeKitEntitlement(url) else {
+            homeUnavailable("Apple Home needs a build signed with your developer team: make run-signed.", retry: false)
+            return
+        }
+        let server = HomeLinkServer(
+            onEvent: { [weak self] event in Task { @MainActor in self?.received(event) } },
+            onDisconnect: { [weak self] in Task { @MainActor in self?.homeDisconnected() } })
+        do {
+            try server.start()
+        } catch {
+            homeUnavailable("Couldn't open the link to the HomeKit helper: \(error)", retry: true)
+            return
+        }
+        home = server
+        homeStatus = "Starting the HomeKit helper…"
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = [HomeLink.socketArgument, server.socketPath]
+        configuration.activates = false
+        configuration.addsToRecentItems = false
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] _, error in
+            guard let error else { return }
+            Task { @MainActor in
+                self?.stopHome()
+                self?.homeUnavailable("Couldn't start the HomeKit helper: \(error.localizedDescription)", retry: true)
+            }
+        }
+        // It connects within a moment, or not at all.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, self.home === server, self.homeAuthorization == nil else { return }
+            self.stopHome()
+            self.homeUnavailable("The HomeKit helper didn't answer.", retry: true)
+        }
+    }
+
+    private func stopHome() {
+        home?.stop()  // the helper quits when its link closes
+        home = nil
+        homeAuthorization = nil
+        if case .home = connectedFor {
+            output = nil
+            connectedFor = nil
+        }
+    }
+
+    private func homeUnavailable(_ message: String, retry: Bool) {
+        homeStatus = message
+        // Without a retry, wait for a provider switch (or relaunch); otherwise try again soon.
+        homeRetry = retry ? Date().addingTimeInterval(15) : .distantFuture
+        if model?.settings.lights.provider == .homeKit { status = message }
+    }
+
+    private func homeDisconnected() {
+        guard home != nil else { return }
+        stopHome()
+        homeUnavailable("The HomeKit helper stopped. Trying again…", retry: true)
+    }
+
+    private func received(_ event: HomeEvent) {
+        switch event {
+        case .hello(let version) where version != HomeLink.version:
+            stopHome()
+            homeUnavailable("The HomeKit helper is from a different build. Rebuild Needledrop.", retry: false)
+        case .hello:
+            break
+        case .catalog(let authorization, let lights, let rooms):
+            homeAuthorization = authorization
+            homeLights = lights
+            homeRooms = rooms
+            homeStatus = switch authorization {
+            case .authorized: lights.isEmpty ? "No colour lights in Apple Home." : "Off"
+            case .notDetermined: "Allow Needledrop Home to use your Home data when macOS asks."
+            case .denied: "Needledrop Home isn't allowed to use Home data. Turn it on in System Settings › Privacy & Security › Home."
+            case .restricted: "Home data is restricted on this Mac."
+            }
+            if output == nil { status = homeStatus }
+        case .problem(let message):
+            status = message
+        }
+    }
+
+    /// Asks the helper for the lights again (Home changes are also sent unasked).
+    func refreshHome() {
+        home?.send(.list)
+        if home == nil { homeRetry = .distantPast }
+    }
+
+    /// Unsigned builds (make app) carry a helper without HomeKit, which can't work.
+    private static func hasHomeKitEntitlement(_ url: URL) -> Bool {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code else { return false }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess,
+              let dictionary = info as? [String: Any],
+              let entitlements = dictionary[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else { return false }
+        return entitlements["com.apple.developer.homekit"] as? Bool == true
     }
 
     // MARK: - Setup
