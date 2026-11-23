@@ -33,7 +33,11 @@ targets:
     # the app is signed.
     postBuildScripts:
       - name: Embed HomeKit helper
-        basedOnDependencyAnalysis: false
+        # Declared so the app's signing step depends on the copy and re-seals after it.
+        inputFiles:
+          - $(BUILD_DIR)/$(CONFIGURATION)-maccatalyst/NeedledropHome.app
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/Library/Helpers/NeedledropHome.app
         script: |
           helper="${BUILD_DIR}/${CONFIGURATION}-maccatalyst/NeedledropHome.app"
           dest="${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/Library/Helpers"
