@@ -2,7 +2,7 @@ KIT := NeedledropKit
 REPLAY := swift run --package-path $(KIT) -c release needledrop-replay
 FIXTURE := Fixtures/synthetic-side.wav
 
-.PHONY: test project app run app-signed run-signed synth analyze play devices listen
+.PHONY: test project app run app-signed run-signed release deploy synth analyze play devices listen
 
 test:            ## Unit + replay integration tests
 	swift test --package-path $(KIT)
@@ -23,6 +23,22 @@ app-signed: project  ## Build signed with the team in project.yml (needed for Sh
 
 run-signed: app-signed
 	open .build/xcode/Build/Products/Debug/Needledrop.app
+
+# Deploying to another Mac: built and signed here, so that Mac needs no Xcode or sign-in.
+# Set MINI (user@host, SSH as the user signed in there) in local.mk, which git ignores.
+-include local.mk
+RELEASE_APP := .build/release/Build/Products/Release/Needledrop.app
+
+release: project  ## Signed Release build (in .build/release, apart from the Debug one)
+	set -o pipefail; xcodebuild -project Needledrop.xcodeproj -scheme Needledrop -configuration Release \
+		-derivedDataPath .build/release -allowProvisioningUpdates build | grep -E "error:|BUILD"
+	codesign --verify --strict $(RELEASE_APP)
+
+deploy: release  ## Copy to /Applications on $(MINI) over SSH and relaunch it there
+	@test -n "$(MINI)" || { echo 'Set MINI=user@host in local.mk or on the command line'; exit 1; }
+	ssh $(MINI) 'pkill -x Needledrop; sleep 1; true'
+	rsync -a --delete $(RELEASE_APP)/ $(MINI):/Applications/Needledrop.app/
+	ssh $(MINI) 'codesign --verify --strict /Applications/Needledrop.app && open /Applications/Needledrop.app'
 
 synth:           ## Write a synthetic side with known ground truth
 	$(REPLAY) synth $(FIXTURE)

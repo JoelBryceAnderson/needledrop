@@ -124,3 +124,15 @@ Recognition from real records needs a signed build with ShazamKit enabled:
 
 Without this the app still runs, but every match attempt fails, and the overlay log shows
 the ShazamKit error. Ad-hoc builds also re-prompt for microphone access after each rebuild.
+
+### Deploying to another Mac
+
+`make deploy` builds a signed Release app here and copies it to `/Applications` on another Mac
+over SSH, then relaunches it there. That Mac needs no Xcode or developer sign-in. Put the
+target in `local.mk` (git ignores it), as the user signed in on that Mac:
+
+```make
+MINI = you@your-mac-mini.local
+```
+
+The first deploy asks for microphone access on that Mac; later ones are signed the same way and don't.
