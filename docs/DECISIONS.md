@@ -358,3 +358,22 @@ two re-matches agree; use the manual override when there are no matches.
 **Lyrics → Metal.** Kinetic type that swells with RMS, smears and blends with the scene has to
 composite inside the renderer. Rasterise glyph atlases with Core Text (or SDF for big sizes) and
 animate them in shaders. A SwiftUI overlay would mean two compositors and no shader effects on the text.
+
+## AirPlay speaker groups for the pass-through
+
+**The pass-through can play to several AirPlay 2 speakers at once, via a private API.**
+macOS gives apps no public way to send live audio to more than one AirPlay speaker. The
+Core Audio AirPlay device takes one receiver at a time, and Control Center can't group them
+for system audio. AVPlayer can group speakers through the public route picker, but it needs
+an asset: a live turntable would have to go through a local HLS stream, adding seconds of
+latency. So `AirPlayRoute` does what Music does, following the MIT-licensed
+[Airlift](https://github.com/jgarms/airlift): an `AVSampleBufferAudioRenderer` is attached
+to the private audio `AVOutputContext`, and the system `AVRoutePickerView` is pointed at that
+context (`setOutputContextID:`), which makes its list multi-select. airplayd owns the group
+and keeps the speakers in sync. It adds about 2 s, as AirPlay to one speaker does, so the
+Output latency setting still lines the picture up. Every private call is looked up at
+runtime; if one is missing, the pass-through falls back to the Mac's output.
+
+Limits: speakers can only be chosen in the system picker (listing or selecting them from
+code needs an Apple-only entitlement), so there is no "all" switch, just tick them all;
+and macOS forgets the choice when the app quits (each launch gets a new context).

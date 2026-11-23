@@ -54,3 +54,64 @@ import Testing
         #expect(p.takeStats().contains("200 frames dropped"))
     }
 }
+
+/// When the AirPlay renderer is started, fed, topped up with silence or caught up.
+@Suite struct AirPlayPacerTests {
+    // At 1000 Hz: preroll 200, chunk 50, target 100, ceiling 500, low water 100.
+    private func pacer() -> AirPlayPacer { AirPlayPacer(sampleRate: 1000) }
+
+    @Test func waitsForPrerollThenStartsOnce() {
+        var p = pacer()
+        #expect(p.next(available: 199, ready: true, lead: 0) == .wait)
+        #expect(p.next(available: 200, ready: true, lead: 0) == .start)
+        #expect(p.started)
+        #expect(p.next(available: 200, ready: true, lead: 0) == .play(50))
+    }
+
+    @Test func playsOnlyWhileTheRendererWantsMore() {
+        var p = pacer()
+        _ = p.next(available: 300, ready: true, lead: 0)
+        #expect(p.next(available: 300, ready: false, lead: 2000) == .done)
+        #expect(p.next(available: 300, ready: true, lead: 2000) == .play(50))
+    }
+
+    @Test func waitsForInputWhileTheRendererHasPlentyQueued() {
+        var p = pacer()
+        _ = p.next(available: 200, ready: true, lead: 0)
+        #expect(p.next(available: 30, ready: true, lead: 400) == .done)
+    }
+
+    @Test func fillsWithSilenceWhenTheInputIsLateAndTheRendererIsRunningDry() {
+        var p = pacer()
+        _ = p.next(available: 200, ready: true, lead: 0)
+        #expect(p.next(available: 30, ready: true, lead: 99) == .silence(50))
+    }
+
+    @Test func catchesUpWhenTheInputRunsAhead() {
+        var p = pacer()
+        _ = p.next(available: 200, ready: true, lead: 0)
+        #expect(p.next(available: 501, ready: false, lead: 2000) == .drop(401))
+        #expect(p.next(available: 500, ready: false, lead: 2000) == .done)
+    }
+
+    @Test func resetWaitsForPrerollAgain() {
+        var p = pacer()
+        _ = p.next(available: 200, ready: true, lead: 0)
+        p.reset()
+        #expect(p.next(available: 100, ready: true, lead: 0) == .wait)
+    }
+}
+
+/// The output choice is stored by name in the app's settings.
+@Suite struct PassThroughOutputTests {
+    @Test func roundTripsByName() throws {
+        let data = try JSONEncoder().encode([PassThrough.Output.airPlay])
+        #expect(String(decoding: data, as: UTF8.self) == #"["airPlay"]"#)
+        #expect(try JSONDecoder().decode([PassThrough.Output].self, from: data) == [.airPlay])
+    }
+
+    @Test func aPassThroughForAirPlayRemembersIt() {
+        #expect(PassThrough(sampleRate: 1000, output: .airPlay).output == .airPlay)
+        #expect(PassThrough(sampleRate: 1000).output == .thisMac)
+    }
+}

@@ -29,9 +29,11 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_hue._tcp</string>
+		<string>_airplay._tcp</string>
+		<string>_raop._tcp</string>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Needledrop finds and controls your Philips Hue Bridge so your lights can follow the album colours and the beat.</string>
+	<string>Needledrop finds your AirPlay speakers to play the turntable on them, and controls your Philips Hue Bridge so your lights can follow the album colours and the beat.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Needledrop listens to your turntable to recognise records, drive the visuals and archive what you play.</string>
 </dict>
