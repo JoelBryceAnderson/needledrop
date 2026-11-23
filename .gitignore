@@ -9,3 +9,4 @@ Fixtures/*.lrc
 Fixtures/*.cover.png
 !Fixtures/.gitkeep
 .DS_Store
+local.mk
