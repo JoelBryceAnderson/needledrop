@@ -104,7 +104,10 @@ struct SettingsView: View {
                         Task { await model.restartInput() }
                     }
                 ))
-                .help("For when the audio interface takes the turntable's only output. Plays to the Mac's current output (speakers or AirPlay). Leave off with a microphone, or it will feed back.")
+                .help("For when the audio interface takes the turntable's only output. Plays to the Mac's current output (speakers or one AirPlay speaker), or to several AirPlay speakers at once. Leave off with a microphone, or it will feed back.")
+                if model.settings.passThrough {
+                    PassThroughOutputRows(model: model)
+                }
             }
             if case .replay = model.settings.input {
                 Toggle("Play replay audio through this Mac", isOn: Binding(

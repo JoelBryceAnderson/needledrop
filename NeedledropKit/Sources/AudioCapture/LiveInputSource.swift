@@ -21,6 +21,8 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
     public let preferredDeviceUID: String?
     /// Also play the input out of the Mac's output device (see `PassThrough`).
     public let playsThrough: Bool
+    /// Where the pass-through plays: the Mac's output, or a group of AirPlay speakers.
+    public let passThroughOutput: PassThrough.Output
     private var passThrough: PassThrough?
     public var displayName: String {
         preferredDeviceUID.flatMap { AudioDeviceCatalog.device(uid: $0)?.name } ?? "System default input"
@@ -87,9 +89,10 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         meterTimer = timer
     }
 
-    public init(deviceUID: String?, playsThrough: Bool = false) {
+    public init(deviceUID: String?, playsThrough: Bool = false, passThroughOutput: PassThrough.Output = .thisMac) {
         preferredDeviceUID = deviceUID
         self.playsThrough = playsThrough
+        self.passThroughOutput = passThroughOutput
         left = .allocate(capacity: maxFrames)
         right = .allocate(capacity: maxFrames)
     }
@@ -234,10 +237,11 @@ public final class LiveInputSource: AudioSource, @unchecked Sendable {
         startMeterReports(path: "Engine", device: device.name)
     }
 
-    /// A fresh player per capture start, at the input's rate (the mixer converts to the output's).
+    /// A fresh player per capture start, at the input's rate (the mixer or airplayd converts).
+    /// The AirPlay speakers chosen stay chosen across these: they belong to `AirPlayRoute`.
     private func startPassThrough(sampleRate: Double) -> PassThrough? {
         guard playsThrough else { return nil }
-        let player = PassThrough(sampleRate: sampleRate)
+        let player = PassThrough(sampleRate: sampleRate, output: passThroughOutput)
         player.start()
         passThrough = player
         return player

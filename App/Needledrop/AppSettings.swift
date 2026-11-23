@@ -1,5 +1,6 @@
 import Archive
 import ArtDirector
+import AudioCapture
 import Foundation
 import SessionState
 import Visuals
@@ -77,6 +78,8 @@ struct AppSettings: Codable, Equatable {
     /// Play the turntable input out of this Mac's output (when the interface takes the
     /// turntable's only output). Off by default: with a microphone it would feed back.
     var passThrough = false
+    /// Where the pass-through plays: this Mac's output, or several AirPlay speakers at once.
+    var passThroughOutput: PassThrough.Output = .thisMac
     /// Take what's playing from Apple Music / Spotify when they're the source.
     var followMusicApps = true
     var recognition: RecognitionChoice = .auto
@@ -113,6 +116,7 @@ struct AppSettings: Codable, Equatable {
         motion = (try? c.decodeIfPresent(MotionChoice.self, forKey: .motion)) ?? d.motion
         replayAudible = try c.decodeIfPresent(Bool.self, forKey: .replayAudible) ?? d.replayAudible
         passThrough = try c.decodeIfPresent(Bool.self, forKey: .passThrough) ?? d.passThrough
+        passThroughOutput = (try? c.decodeIfPresent(PassThrough.Output.self, forKey: .passThroughOutput)) ?? d.passThroughOutput
         followMusicApps = try c.decodeIfPresent(Bool.self, forKey: .followMusicApps) ?? d.followMusicApps
         recognition = (try? c.decodeIfPresent(RecognitionChoice.self, forKey: .recognition)) ?? d.recognition
         setupCompleted = try c.decodeIfPresent(Bool.self, forKey: .setupCompleted) ?? d.setupCompleted
